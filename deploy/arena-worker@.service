@@ -1,0 +1,22 @@
+[Unit]
+Description=Campus Arena worker %i
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=arena
+WorkingDirectory=/srv/arena/backend
+Environment=ARENA_DATA_DIR=/srv/arena-data
+Environment=ARENA_PUBLIC_URL=https://your-domain.example
+EnvironmentFile=-/etc/arena/arena.env
+ExecStart=/srv/arena/backend/.venv/bin/python -m arena.worker --workers 4
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/arena-data
+# Workers drive Docker; keep the hardening off Docker's own socket access.
+
+[Install]
+WantedBy=multi-user.target

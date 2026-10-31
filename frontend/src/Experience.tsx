@@ -1,0 +1,479 @@
+import React, { useState } from "react";
+import { useData, post, type Data } from "./api";
+import { A, fmtDay, Status } from "./ui";
+import { Replay } from "./Replay";
+import { EquityPanel } from "./EquityPanel";
+
+function StatStrip() {
+  const events = useData("/events");
+  const replays = useData("/replays");
+  const board = useData("/leaderboard");
+  const live = (events.data?.events ?? []).filter(
+    (e: Data) => !e.exhibition && e.status !== "completed",
+  );
+  const teams = (events.data?.events ?? [])
+    .filter((e: Data) => !e.exhibition)
+    .reduce((sum: number, e: Data) => sum + (e.entry_count || 0), 0);
+  const hands = (replays.data?.replays ?? []).reduce(
+    (sum: number, r: Data) => sum + (r.hand_count || 0),
+    0,
+  );
+  const top = board.data?.leaderboard?.[0];
+  return (
+    <div className="stat-strip">
+      <div className="inner wrap">
+        <div className="stat">
+          <b>{live.length}</b>
+          <span>Events open</span>
+        </div>
+        <div className="stat">
+          <b>{teams}</b>
+          <span>Teams entered</span>
+        </div>
+        <div className="stat">
+          <b>{hands.toLocaleString("en-US")}</b>
+          <span>Hands replayed</span>
+        </div>
+        <div className="stat">
+          <b>{top ? top.team_name : "—"}</b>
+          <span>
+            {top ? `Leader · ${Number(top.total_score).toFixed(2)} pts` : "No scores yet"}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Exhibit() {
+  const { data } = useData("/replays");
+  const exhibition = data?.replays?.find((r: Data) => r.source === "exhibition");
+  return (
+    <section className="section ink" aria-labelledby="exhibit-title">
+      <div className="wrap">
+        <div className="exhibit-bar">
+          <div>
+            <p className="label">Exhibit A</p>
+            <h2 id="exhibit-title" className="display-2">
+              The table, straight from the engine
+            </h2>
+          </div>
+          <p className="exhibit-note">
+            Eight baseline bots · completed exhibition · every move replayed
+          </p>
+        </div>
+        <div className="exhibit-stage">
+          {exhibition ? (
+            <Replay id={exhibition.id} compact />
+          ) : (
+            <div className="replay-placeholder">
+              <span>The first exhibition replay will appear here.</span>
+            </div>
+          )}
+        </div>
+        <div className="exhibit-foot">
+          <p className="exhibit-note">No humans at the table. Code only.</p>
+          <A to="/replays" className="text-button">
+            Open the replay room →
+          </A>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function HowItWorks({ starter }: { starter: Data | null }) {
+  const source: string = starter?.source ?? "";
+  const preview = source ? source.split("\n").slice(0, 13).join("\n") : "";
+  return (
+    <section className="section" aria-labelledby="how-title">
+      <div className="wrap">
+        <div className="section-head">
+          <div>
+            <p className="label">Three moves</p>
+            <h2 id="how-title" className="display-1">
+              From blank file to final table
+            </h2>
+          </div>
+        </div>
+        <div className="how-grid">
+          <ol className="steps">
+            <li className="step">
+              <span className="step-num">01</span>
+              <div>
+                <h3>Download the kit</h3>
+                <p>
+                  A starter Agent, a local simulator that mirrors the platform, and
+                  the ICM calculator. Everything runs offline.
+                </p>
+              </div>
+            </li>
+            <li className="step">
+              <span className="step-num">02</span>
+              <div>
+                <h3>Write your strategy</h3>
+                <p>
+                  One Python class with an <strong>act(observation)</strong> method.
+                  Fold, check, call, or raise. Standard library only.
+                </p>
+              </div>
+            </li>
+            <li className="step">
+              <span className="step-num">03</span>
+              <div>
+                <h3>Submit and watch</h3>
+                <p>
+                  Save your bot, run a practice table, then enter an event. Your bot
+                  plays; you watch every decision in the replay.
+                </p>
+              </div>
+            </li>
+          </ol>
+          <div className="code-sample">
+            <div className="code-bar">
+              <span>
+                <span className="dot">●</span> agent.py
+              </span>
+              <span>starter</span>
+            </div>
+            <pre>{preview || "Loading the starter agent…"}</pre>
+            <div className="code-foot">
+              <span>Python 3.12 · standard library only</span>
+              <a href="/api/starter/download" className="text-button">
+                Download kit ↓
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function EventRows() {
+  const { data, error } = useData("/events");
+  const events = (data?.events ?? []).filter((e: Data) => !e.exhibition);
+  return (
+    <section className="section" aria-labelledby="events-title">
+      <div className="wrap">
+        <div className="section-head">
+          <div>
+            <p className="label">Schedule</p>
+            <h2 id="events-title" className="display-1">
+              Upcoming events
+            </h2>
+          </div>
+          <A to="/events" className="text-button side">
+            All events →
+          </A>
+        </div>
+        {error && <div className="notice" role="alert">Failed to load events.</div>}
+        {!data && !error && <p role="status">Loading events…</p>}
+        {data && events.length === 0 && (
+          <div className="empty">
+            No events are scheduled yet. The next table opens soon.
+          </div>
+        )}
+        {data && events.length > 0 && (
+          <div className="rows">
+            {events.map((e: Data) => (
+              <A key={e.id} to={`/events/${e.id}`} className="row-item">
+                <span className="grow">
+                  <h3>
+                    {e.title}
+                    <span className="arrow">↗</span>
+                  </h3>
+                </span>
+                <Status text={e.status} done={e.status === "completed"} />
+                <span className="meta">
+                  {fmtDay(e.build_starts_at)} · {e.entry_count} teams
+                </span>
+              </A>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function StandingsPeek() {
+  const { data, error } = useData("/leaderboard");
+  const rows = (data?.leaderboard ?? []).slice(0, 5);
+  return (
+    <section className="section bone-2" aria-labelledby="standings-title">
+      <div className="wrap">
+        <div className="section-head">
+          <div>
+            <p className="label">Standings</p>
+            <h2 id="standings-title" className="display-1">
+              Who is winning
+            </h2>
+          </div>
+          <A to="/leaderboard" className="text-button side">
+            Full standings →
+          </A>
+        </div>
+        {error && <div className="notice" role="alert">Failed to load standings.</div>}
+        {!data && !error && <p role="status">Loading standings…</p>}
+        {data && rows.length === 0 && (
+          <div className="empty">
+            No rounds have been scored yet. Enter an event and put your team on this board.
+          </div>
+        )}
+        {rows.length > 0 && (
+          <div className="rows">
+            {rows.map((r: Data) => (
+              <div key={r.team_id} className="row-item">
+                <span className="rank-cell" style={{ minWidth: 34 }}>
+                  {r.rank}
+                </span>
+                <span className="grow">
+                  <h3>{r.team_name}</h3>
+                </span>
+                <span className="meta">{r.college || "—"}</span>
+                <span className="meta">
+                  <strong>{r.total_score}</strong> pts
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+export function ArenaHome() {
+  const starter = useData("/starter");
+  return (
+    <main className="exp-home">
+      <section className="hero" aria-labelledby="hero-title">
+        <div className="wrap hero-grid">
+          <div className="hero-copy">
+            <p className="label">Student pokerbot competition</p>
+            <h1 id="hero-title" className="display-hero">
+              <span>
+                CAN YOUR
+                <br />
+                AI GAMBLE
+                <br />
+                SMART?
+              </span>
+            </h1>
+            <p className="hero-sub">
+              Build a Python pokerbot, throw it on the felt against other
+              students' bots, and watch every decision it makes. Simulated
+              chips. Real strategy.
+            </p>
+            <div className="hero-actions">
+              <A to="/workshop" className="exp-cta primary">
+                Build your bot
+              </A>
+              <A to="/replays" className="exp-cta">
+                Watch a game
+              </A>
+            </div>
+          </div>
+          <div className="hero-stage">
+            <EquityPanel />
+          </div>
+        </div>
+        <StatStrip />
+      </section>
+      <Exhibit />
+      <HowItWorks starter={starter.data} />
+      <EventRows />
+      <StandingsPeek />
+    </main>
+  );
+}
+
+export function SponsorsPage() {
+  const items = [
+    {
+      title: "Compute",
+      body: "Support the infrastructure that runs future competitions.",
+    },
+    {
+      title: "Prize",
+      body: "Help create prizes for student teams at an event.",
+    },
+    {
+      title: "Campus",
+      body: "Help bring an online league to a campus community.",
+    },
+  ];
+  return (
+    <main className="page wrap">
+      <header className="page-head">
+        <p className="label">Founding partnerships</p>
+        <h1 className="display-1">
+          Give the next
+          <br />
+          great mind a seat
+        </h1>
+        <p className="page-lead">
+          We are opening founding partnerships to organizations that want to
+          help students build, compete, and learn together.
+        </p>
+      </header>
+      <div className="page-body">
+        <div className="sponsor-grid">
+          <ol className="partner-list">
+            {items.map((it, i) => (
+              <li key={it.title}>
+                <span className="num" aria-hidden="true">
+                  0{i + 1}
+                </span>
+                <div>
+                  <h2>{it.title}</h2>
+                  <p>{it.body}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
+          <div className="panel">
+            <h2 className="display-3">What partners get</h2>
+            <p>
+              Your name on the event your support makes possible: the schedule,
+              the standings, and the replays students share. No invented metrics;
+              the platform reports exactly what happens.
+            </p>
+            <p style={{ marginTop: 16 }}>
+              <A to="/contact?topic=sponsor" className="exp-cta primary">
+                Become a sponsor
+              </A>
+            </p>
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+export function ContactPage() {
+  const [topic, setTopic] = useState(() =>
+    new URLSearchParams(window.location.search).get("topic") === "sponsor"
+      ? "Sponsorship"
+      : "Student",
+  );
+  const prefix = `[${topic}] `;
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [company, setCompany] = useState("");
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setSuccess(false);
+    try {
+      await post("/sponsor-inquiries", {
+        name: name.trim(),
+        email: email.trim(),
+        company: company.trim() || "General contact",
+        message: prefix + message.trim(),
+      });
+      setSuccess(true);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not save your inquiry. Please try again.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main className="page wrap">
+      <header className="page-head">
+        <p className="label">Contact</p>
+        <h1 className="display-1">Your move</h1>
+        <p className="page-lead">
+          Questions, campus leagues, or a seat at the table.
+        </p>
+      </header>
+      <div className="page-body">
+        <div className="contact-grid">
+          <div>
+            <p>
+              Students: ask about events, teams, or the bot interface. Colleges:
+              ask about running a league on campus. Sponsors: ask about founding
+              partnerships.
+            </p>
+            <p className="muted" style={{ marginTop: 14 }}>
+              Every inquiry lands with the local organizers, not a ticket queue.
+            </p>
+          </div>
+          <form className="form" onSubmit={submit}>
+            <label htmlFor="exp-topic">Inquiry type</label>
+            <select
+              id="exp-topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+            >
+              <option>Student</option>
+              <option>College</option>
+              <option>Sponsorship</option>
+            </select>
+            <label htmlFor="exp-name">Name</label>
+            <input
+              id="exp-name"
+              minLength={2}
+              maxLength={70}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+            />
+            <label htmlFor="exp-email">Email</label>
+            <input
+              id="exp-email"
+              maxLength={254}
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <label htmlFor="exp-company">Company or college (optional)</label>
+            <input
+              id="exp-company"
+              minLength={2}
+              maxLength={120}
+              value={company}
+              onChange={(e) => setCompany(e.target.value)}
+            />
+            <label htmlFor="exp-message">Message</label>
+            <textarea
+              id="exp-message"
+              minLength={10}
+              maxLength={4000 - prefix.length}
+              required
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+            />
+            <button
+              type="submit"
+              disabled={loading || success}
+              className="exp-cta primary"
+            >
+              {loading ? "Sending…" : success ? "Received" : "Send inquiry"}
+            </button>
+            {error && <p role="alert">{error}</p>}
+            {success && (
+              <p role="status" className="contact-success">
+                Your inquiry was received.
+              </p>
+            )}
+          </form>
+        </div>
+      </div>
+    </main>
+  );
+}

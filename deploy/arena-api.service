@@ -1,0 +1,25 @@
+[Unit]
+Description=Campus Arena API
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=arena
+WorkingDirectory=/srv/arena/backend
+Environment=ARENA_DATA_DIR=/srv/arena-data
+Environment=ARENA_EMBEDDED_WORKER=0
+Environment=ARENA_SECURE_COOKIE=1
+Environment=ARENA_ORIGINS=https://your-domain.example
+Environment=ARENA_PUBLIC_URL=https://your-domain.example
+# Secrets belong in a credential file, not here:
+EnvironmentFile=-/etc/arena/arena.env
+ExecStart=/srv/arena/backend/.venv/bin/uvicorn arena.app:app --host 127.0.0.1 --port 8001 --workers 2
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/arena-data
+
+[Install]
+WantedBy=multi-user.target

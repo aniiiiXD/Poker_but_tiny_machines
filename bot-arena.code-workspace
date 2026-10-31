@@ -1,0 +1,33 @@
+{
+  "folders": [
+    {
+      "name": "Campus Arena \u2014 frontend",
+      "path": "frontend"
+    },
+    {
+      "name": "Campus Arena \u2014 backend",
+      "path": "backend"
+    },
+    {
+      "name": "Campus Arena \u2014 project",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": "${workspaceFolder:Campus Arena \u2014 backend}/.venv/bin/python"
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Start Campus Arena",
+        "type": "shell",
+        "command": "python3 scripts/dev.py",
+        "options": {
+          "cwd": "${workspaceFolder:Campus Arena \u2014 project}"
+        },
+        "problemMatcher": []
+      }
+    ]
+  }
+}

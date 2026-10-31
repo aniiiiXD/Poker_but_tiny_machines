@@ -1,0 +1,7 @@
+{
+  "bias": -0.5,
+  "high": 1.0,
+  "pair": 0.7,
+  "raise_threshold": 0.65,
+  "call_threshold": 0.1
+}
