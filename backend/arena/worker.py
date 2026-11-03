@@ -184,7 +184,7 @@ def practice(job):
                 raise ValueError("Submission no longer exists.")
             bot_class = ModelContainerBot if model else ContainerBot
             sandbox_bot = bot_class(db.DATA / 'bots' / (submission['id'] + ('.zip' if model else '.py')),
-                                    submission['name'], decision_ms=50.0 if model else 1.0)
+                                    submission['name'], decision_ms=50.0 if model else 20.0)
             bots[0] = sandbox_bot
         try:
             result = play_table(bots, payload["seed"], max_hands=payload["hands"], capture=True)
@@ -235,7 +235,10 @@ def _practice_game(job, payload, game_id):
         if payload.get("submission_id"):
             submission, model = _owned_submission(payload)
             bot_class = ModelContainerBot if model else ContainerBot
-            decision_ms = adapter.decision_ms["model" if model else "classic"]
+            # Practice is the learning lane: relaxed 20ms classic budget so
+            # starters never time out on container overhead. Scored rounds
+            # keep the event's own decision_ms — competition lives there.
+            decision_ms = 50.0 if model else 20.0
             sandbox_bot = bot_class(
                 db.DATA / 'bots' / (submission['id'] + ('.zip' if model else '.py')),
                 submission['name'], decision_ms=decision_ms,
@@ -322,7 +325,7 @@ def validate_github_submission(job):
     from .games import get_game
 
     protocol = 'poker' if game_id == 'poker' else get_game(game_id).adapter.protocol
-    bot = bot_class(path, payload['full_name'], decision_ms=50.0 if is_model else 1.0, protocol=protocol)
+    bot = bot_class(path, payload['full_name'], decision_ms=50.0 if is_model else 20.0, protocol=protocol)
     try:
         if game_id == 'poker':
             smoke_bot(bot)

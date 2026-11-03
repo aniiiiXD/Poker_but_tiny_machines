@@ -128,16 +128,20 @@ def valid_action(result, protocol="poker"):
         kind = result.get("type")
         if kind in ("draw", "pass", "uno", "challenge"):
             return True
-        return kind == "play" and type(result.get("card")) is str and 0 < len(result["card"]) <= 8
+        # Card ids are color+face+copy (e.g. "r7a", "breverseb") — the engine
+        # validates ownership and matching, so only bound the length here.
+        return kind == "play" and type(result.get("card")) is str and 0 < len(result["card"]) <= 16
     if protocol == "hearts":
         kind = result.get("type")
         if kind == "play":
             card = result.get("card")
-            return type(card) is str and len(card) == 2 and card[0] in "cdhs"
+            return (type(card) is str and len(card) == 2 and
+                    card[0] in "A23456789TJQK" and card[1] in "cdhs")
         if kind == "pass":
             cards = result.get("cards")
             return (type(cards) is list and len(cards) == 3 and
-                    all(type(c) is str and len(c) == 2 and c[0] in "cdhs" and c[1] in "cdhs" for c in cards))
+                    all(type(c) is str and len(c) == 2 and
+                        c[0] in "A23456789TJQK" and c[1] in "cdhs" for c in cards))
         return False
     if protocol == "rummy":
         kind = result.get("type")
@@ -180,7 +184,12 @@ def clean_result(result, protocol="poker"):
     """Rebuild the reply from allow-listed fields only."""
     if protocol == "uno":
         kind = result["type"]
-        return {"type": kind, "card": result["card"]} if kind == "play" else {"type": kind}
+        if kind == "play":
+            clean = {"type": "play", "card": result["card"]}
+            if isinstance(result.get("color"), str):
+                clean["color"] = result["color"]  # wilds carry the chosen color
+            return clean
+        return {"type": kind}
     if protocol == "hearts":
         kind = result["type"]
         if kind == "play":
@@ -308,7 +317,9 @@ def main():
             if completed > deadline:
                 raise TimeoutError
             response = json.loads(raw)
-            if response.get("nonce") != nonce or not valid_action(response.get("result"), protocol):
+            if response.get("nonce") != nonce:
+                fatal("Bot nonce mismatch")
+            if not valid_action(response.get("result"), protocol):
                 fatal("Bot returned an invalid action")
             result = response["result"]
             clean = clean_result(result, protocol)
