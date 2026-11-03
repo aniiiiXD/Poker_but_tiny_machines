@@ -6,8 +6,10 @@ spawned rummy TICKET-003
 spawned hearts TICKET-004
 spawned hexchange TICKET-005
 spawned frontend TICKET-006
+spawned catantron TICKET-007 (engine swap, user directive)
 done hearts TICKET-004 (23/24 tests, gated)
 done uno TICKET-002 (28/28 tests, gated)
 done frontend TICKET-006 (lint+build green, gated)
 done rummy TICKET-003 (30/30 tests, gated)
 done hexchange TICKET-005 (32/32 tests, gated)
+done catantron TICKET-007 (39/39 tests, gated — engine swap complete)

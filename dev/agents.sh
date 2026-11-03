@@ -39,7 +39,8 @@ render() {
   printf '%-3s %-22s %-34s %s %s\n' '③' 'UNO' 'game engine' "$(dot "$uno") ${uno:-unknown} (TICKET-002)"; count "$uno"
   printf '%-3s %-22s %-34s %s %s\n' '④' 'RUMMY' 'game engine' "$(dot "$rummy") ${rummy:-unknown} (TICKET-003)"; count "$rummy"
   printf '%-3s %-22s %-34s %s %s\n' '⑤' 'HEARTS' 'game engine' "$(dot "$hearts") ${hearts:-unknown} (TICKET-004)"; count "$hearts"
-  printf '%-3s %-22s %-34s %s %s\n' '⑥' 'CATAN' 'engine + trade overlay' "$(dot "$catan") ${catan:-unknown} (TICKET-005)"; count "$catan"
+  ct=$(ticket_status TICKET-007-catantron.md)
+  printf '%-3s %-22s %-34s %s %s\n' '⑥' 'CATAN' 'catantron engine swap' "$(dot "$ct") ${ct:-unknown} (TICKET-007)"; count "$ct"
   fe=$(ticket_status TICKET-006-frontend.md)
   printf '%-3s %-22s %-34s %s %s\n' '⑩' 'FRONTEND' 'panels · tabs · wording' "$(dot "$fe") ${fe:-unknown} (TICKET-006)"; count "$fe"
   wd="standing-by"; [ -n "$testing" ] && { wd="scanning (pytest live)"; }

@@ -270,3 +270,159 @@ standing in an event is the average of its match points.
     negotiation overlay rather than a classic rule.)
 15. **Bounded history.** Observations carry the most recent 100 public events
     rather than the full history.
+
+## 15. Version 2 — the catanatron engine (TICKET-007)
+
+*Stack Theory arena game · protocol `hexchange` · rules version 1 (wire) ·
+engine version 2*
+
+As of engine version 2 the Hexchange rules engine is the open-source
+**catanatron** library — <https://github.com/bcollazo/catanatron> — licensed
+under the **GNU General Public License v3.0 (GPL-3.0)**. catanatron supplies
+the island, the dice, production, building legality, the robber, development
+cards, bank trading, and termination. Everything social around it — the
+observation projection, the trade overlay, fault accounting, logging, and the
+match loop — remains Stack Theory's own code (`engine.py`, the "worker").
+Full attribution lives in the repository root `THIRD_PARTY_NOTICES.md`.
+
+The wire contract is unchanged: same `play_hexchange_match(bots, seed,
+decision_cap=500, capture=False)` signature, same result schema, same
+observation key set, same action vocabulary, `protocol: 1` and
+`rules_version: 1` (the registry owns those labels). What changes is the
+engine underneath, and with it the deviations below.
+
+### §15.1 Determinism model (the global-RNG lock)
+
+catanatron draws its randomness (seat shuffle at `Game` construction, board
+terrain/number/port shuffles, dice, development deck, robber steals, fallback
+discards) from Python's **global `random` module** — not from an injected
+generator. v2 therefore runs every match inside a module-level
+`threading.Lock` and calls `random.seed(seed)` at match start:
+
+- Two matches never interleave their global-RNG draws, so a match is a
+  serializable critical section. Concurrent worker threads serialize on the
+  lock; throughput trades against strict same-seed replayability.
+- `random.seed(seed)` at match start makes the whole stream — and therefore
+  the match — a pure function of `(bots, seed)`. Baselines keep using their
+  own `random.Random` instances, which the global seed does not touch.
+- Trade-off, declared: matches in one process cannot run in parallel. This is
+  the price of using catanatron's global-RNG determinism as-is.
+
+### §15.2 §Observation — the frozen projection (written before code)
+
+Every bot decision receives exactly this key set (same keys as v1; contents
+re-projected from catanatron state):
+
+```json
+{
+  "protocol": 1, "game": "hexchange", "rules_version": 1,
+  "seat": 0,
+  "players":   [{"seat": 0, "name": "...", "count": 4, "vp": 2, "dev_count": 1}, ...],
+  "board":     {"hexes": [...], "vertices": [...], "edges": [...], "ports": [...]},
+  "robber": 7,
+  "buildings": [{"seat": 1, "vertex": 12, "kind": "settlement"}, ...],
+  "roads":     [{"seat": 2, "edge": 31}, ...],
+  "resources": {"brick": 1, "forest": 2, "ore": 0, "pasture": 1, "wheat": 0},
+  "dev_cards": {"knight": 0, "vp": 1, "monopoly": 0, "road_building": 0,
+                "year_of_plenty": 0},
+  "turn": {"type": "main", "offers_used": 0, "offers_max": 3},
+  "history":   [/* last 100 public events */],
+  "decision_number": 12, "decision_cap": 500
+}
+```
+
+**Id schemes (frozen).** Hex ids are catanatron tile ids `0–18` (template
+placement order). Vertex ids are catanatron node ids `0–53`. Edge ids are
+integers `0–71` assigned over the 72 land edges sorted by their node-id pair;
+`board.edges[i]["vertices"]` is the `[a, b]` node pair, and every build-road
+reply uses the integer id. Ports are listed as
+`{"resource": <name|null>, "nodes": [a, b]}` (`null` = 3:1 port). Resource
+names stay the v1 terrain names: `forest`=wood, `brick`=brick, `pasture`=sheep,
+`wheat`=wheat, `ore`=ore.
+
+**Visibility table (the v2 freeze).**
+
+| Public | Private (own seat only) | Hidden |
+|---|---|---|
+| board (hexes, terrain, numbers, vertices, edges, ports), all buildings and roads, robber position, dice rolls, producing hexes, per-seat resource **counts**, per-seat development-card **counts**, public VP (`vp`: buildings + longest-road/largest-army bonuses), longest-road and largest-army holders, every trade offer/response with its resource maps, every dev card **played** (with its declared effect), dev purchase events (no type), discard events (seat + count only) | own resource tokens **by type**, own development cards **by type** | dev deck order and remaining composition, opponents' resource identities, opponents' dev card types, the stolen token's identity, VP dev cards until the match ends |
+
+`decision_number` counts every bot decision (setup, robber, main, trade
+response). Auto-executed engine chance steps — the dice roll and the
+discard — are never shown to bots, never counted, and never faulted.
+
+**Turn prompts** (unchanged vocabulary): `setup_settlement`, `setup_road`,
+`robber`, `main`, `respond`, `free_road` — with the v1 payloads.
+
+### §15.3 v2 deviation list (complete)
+
+Inherited platform deviations that remain in force: **cap termination**,
+**auto-discard**, **overlay trades are platform additions**, **fixed first
+seat**, seeded number placement (no 6/8-adjacency rule), token names
+(forest/pasture/wheat/brick/ore), bounded negotiation, bounded history.
+
+New or changed under the catanatron engine:
+
+1. **Cap termination (platform).** At 500 bot decisions the match ends
+   (`terminal_reason: "cap"`); most actual VP wins, ties share. catanatron's
+   own turn limit is not used.
+2. **Auto-discard (platform).** On a roll of 7, seats above the discard limit
+   discard automatically — never a bot decision: each discards
+   `floor(hand/2)` tokens, chosen lowest-first in the fixed alphabetical
+   resource order `brick, forest, ore, pasture, wheat`. The count is public;
+   the discarded identities are not.
+3. **Overlay trades are platform additions (platform).** Player-to-player
+   trading does not exist in catanatron. The v1 `offer`/`accept`/`reject`/
+   `counter` overlay (max 3 offers per turn, first accept wins, counters
+   replace and restart the round, affordability enforced) is implemented in
+   the worker as direct frequency-deck mutations between seats, logged as
+   public events.
+4. **Fixed first seat (platform).** catanatron shuffles seating at `Game`
+   construction from the global RNG. The worker deterministically restores the
+   passed bot order immediately after construction, so seat 0 (the first bot
+   in the list) always takes the first turn.
+5. **Auto-roll (new).** The dice roll is engine chance: the worker executes it
+   without asking the active bot. A knight therefore can never be played
+   *before* the roll (catanatron would allow it); knights are played in the
+   main phase, after production.
+6. **Robber steal threshold (platform, retained from v1).** The engine would
+   allow stealing from any adjacent seat holding ≥ 1 token. v2 keeps the v1
+   rule: a steal target must hold **more than 7** tokens, and `steal: null`
+   is always legal (declining to steal). The worker validates this strictly
+   and executes the platform-legal action itself when the engine's own option
+   list is narrower.
+7. **Bank trades (retained + classic).** The v1 flat 4:1 desk is joined by the
+   classic ports the engine ships: a seat on a 3:1 port node trades 3:1 and on
+   a 2:1 resource port trades 2:1 in that resource (ports are public board
+   data). The bank never refuses a *legitimate* bank trade — if the bank
+   reserve of the requested token is empty, the worker replenishes it (v1's
+   unlimited-bank rule, retained, logged in the privileged audit only).
+8. **Finite production (classic; v1 change).** Production is bank-limited as
+   in the classic game: a terrain whose bank reserve is empty produces nothing
+   that roll. (v1's unlimited bank survives only in rule 7.)
+9. **Year of plenty is bank-limited (classic; v1 change).** If the bank holds
+   fewer than both requested tokens, the card grants what the bank has
+   (catanatron's own 1-token fallback) instead of faulting.
+10. **Longest road and largest army (classic; v1 change).** The +2 VP bonus
+    cards are active (v1 §14 item 1 is dropped). Public VP therefore includes
+    the bonuses; VP dev cards stay secret until match end.
+11. **Ports exist (classic; v1 change).** The 9 harbor tiles of the classic
+    island (5× 2:1, 4× 3:1) are on the board and public (v1 §14 item 6
+    dropped).
+12. **Discard on a 7 (classic; v1 change).** The v1 "no discard" deviation is
+    dropped; the classic discard happens, executed automatically per rule 2.
+13. **Steal eligibility (classic; v1 change).** The engine steals from any
+    adjacent eligible seat — the victim pool is classic (≥ 1 token, adjacent,
+    not the mover) with the platform's > 7 threshold applied on top (rule 6).
+14. **Just-bought dev cards (platform).** catanatron does not itself forbid
+    playing a development card bought the same turn; the worker enforces the
+    classic/v1 rule (one dev card per turn, never the just-bought one) at the
+    action-mapping layer — an attempt is a fault.
+15. **Termination check (platform).** The match ends as soon as any seat
+    reaches the VP target; if several seats cross 10 on the same action, they
+    share the win. At the cap the most actual VP wins, ties share.
+16. **Board ids (engine).** Hex/vertex/edge ids follow catanatron's numbering
+    (§15.2), not v1's geometric ids; the island shape, terrain distribution,
+    and number tokens are unchanged. The 3-player shared supply is 3× the
+    per-seat pieces rather than v1's fixed 54/20/16 table.
+17. **No free text, ever.** Unchanged from v1: the negotiation overlay is
+    structured only.

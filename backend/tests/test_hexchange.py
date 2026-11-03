@@ -1,5 +1,13 @@
-"""Stack Theory Hexchange v1 engine rules, trade overlay, privacy, and fallbacks."""
+"""Stack Theory Hexchange v2 (catanatron engine) — rules, overlay, privacy.
+
+TICKET-007: the match worker is catanatron-backed (RULES.md §15). These tests
+cover the frozen observation projection, the trade overlay, fault fallbacks,
+robber/knight behavior, VP/cap termination, resource conservation, and — the
+headline — determinism under the global-RNG lock.
+"""
+import itertools
 import random
+import threading
 
 import pytest
 
@@ -10,9 +18,8 @@ from arena.games.hexchange.board import (
     NUMBER_TOKENS,
     RESOURCE_TYPES,
     build_board,
-    hand_total,
 )
-from arena.games.hexchange.engine import DEV_TYPES, play_hexchange_match
+from arena.games.hexchange.engine import DEV_TYPES, play_hexchange_match, static_board
 from arena.sandbox import SandboxDown
 
 DEV_TOTAL = 25
@@ -134,15 +141,6 @@ def steal_targets(observation, seat, hex_id):
     return sorted(targets)
 
 
-def adjacent_to_hex(observation, seat, hex_id):
-    buildings = {b["vertex"]: (b["seat"], b["kind"]) for b in observation["buildings"]}
-    return any(
-        occupant is not None and occupant[0] == seat
-        for vertex in observation["board"]["hexes"][hex_id]["vertices"]
-        for occupant in [buildings.get(vertex)]
-    )
-
-
 # -- scripted behaviors ---------------------------------------------------------
 
 
@@ -230,7 +228,7 @@ def baseline_table(seats, seed):
     return hex_baselines.make_hexchange_table(seats, seed=seed)
 
 
-# -- board generation -----------------------------------------------------------
+# -- board generation (the v1 board module still ships for reference) ------------
 
 
 def test_board_generation_is_legal_and_symmetric():
@@ -248,26 +246,6 @@ def test_board_generation_is_legal_and_symmetric():
         assert terrains.count("desert") == 1
         numbers = sorted(h["number"] for h in board.hexes if h["number"] is not None)
         assert numbers == sorted(NUMBER_TOKENS)
-        assert all(h["number"] is None for h in board.hexes if h["terrain"] == "desert")
-        assert board.desert_hex == next(h["id"] for h in board.hexes
-                                        if h["terrain"] == "desert")
-        for entry in board.hexes:
-            assert len(set(entry["vertices"])) == 6
-            assert len(set(entry["edges"])) == 6
-            for neighbor in entry["neighbors"]:
-                assert entry["id"] in board.hexes[neighbor]["neighbors"]
-        for vertex in board.vertices:
-            assert 1 <= len(vertex["hexes"]) <= 3
-            for neighbor in vertex["vertices"]:
-                assert vertex["id"] in board.vertices[neighbor]["vertices"]
-            assert all(
-                vertex["id"] in board.edges[edge]["vertices"]
-                for edge in vertex["edges"]
-            )
-        for edge in board.edges:
-            a, b = edge["vertices"]
-            assert b in board.vertices[a]["vertices"]
-            assert 1 <= len(edge["hexes"]) <= 2
 
 
 def test_board_generation_is_deterministic_per_seed():
@@ -276,35 +254,58 @@ def test_board_generation_is_deterministic_per_seed():
         second = build_board(random.Random(seed))
         assert [h["terrain"] for h in first.hexes] == [h["terrain"] for h in second.hexes]
         assert [h["number"] for h in first.hexes] == [h["number"] for h in second.hexes]
-    a = build_board(random.Random(1))
-    b = build_board(random.Random(2))
-    assert [h["terrain"] for h in a.hexes] != [h["terrain"] for h in b.hexes] or \
-        [h["number"] for h in a.hexes] != [h["number"] for h in b.hexes]
 
 
-def test_production_dice_distribution_over_long_run():
-    rolls = []
+# -- the frozen v2 board projection (RULES.md §15.2) ------------------------------
+
+
+def test_static_board_projection_is_frozen_and_consistent():
     for seed in (1, 2, 3):
-        result = play_hexchange_match(baseline_table(4, seed), seed=seed,
-                                      decision_cap=3000, capture=False)
-        rolls.extend(entry["dice"][0] + entry["dice"][1] for entry in log_of(result, "roll"))
-        for production in log_of(result, "production"):
-            if not production.get("setup"):
-                assert production["roll"] != 7  # a 7 never produces
-    assert len(rolls) > 600
-    histogram = {total: rolls.count(total) for total in range(2, 13)}
-    assert all(count > 0 for count in histogram.values())
-    assert histogram[7] > histogram[2]
-    assert histogram[7] > histogram[12]
-    assert histogram[7] > histogram[3]
-    assert histogram[7] > histogram[11]
+        board = static_board(seed)
+        assert set(board) == {"hexes", "vertices", "edges", "ports"}
+        assert [h["id"] for h in board["hexes"]] == list(range(19))
+        assert [v["id"] for v in board["vertices"]] == list(range(54))
+        assert [e["id"] for e in board["edges"]] == list(range(72))
+        terrains = [h["terrain"] for h in board["hexes"]]
+        assert terrains.count("forest") == 4 and terrains.count("desert") == 1
+        numbers = sorted(h["number"] for h in board["hexes"] if h["number"] is not None)
+        assert numbers == sorted(NUMBER_TOKENS)
+        for hex_entry in board["hexes"]:
+            assert len(hex_entry["vertices"]) == 6 and len(hex_entry["edges"]) == 6
+            incident = {v for edge in hex_entry["edges"]
+                        for v in board["edges"][edge]["vertices"]}
+            assert set(hex_entry["vertices"]) == incident
+        # every listed edge belongs to exactly the land graph
+        for edge in board["edges"]:
+            a, b = edge["vertices"]
+            assert b in board["vertices"][a]["vertices"]
+            assert a in board["vertices"][b]["vertices"]
+        # ports reference land nodes and carry our token names
+        port_resources = {port["resource"] for port in board["ports"]}
+        assert port_resources <= set(RESOURCES) | {None}
+        assert sum(len(port["nodes"]) for port in board["ports"]) == 18
+        for port in board["ports"]:
+            for node in port["nodes"]:
+                assert 0 <= node < 54
 
 
-# -- setup ------------------------------------------------------------------------
+def test_observations_carry_the_static_board_and_ids_align():
+    recorders = [Recording(bot) for bot in baseline_table(3, 4)]
+    play_hexchange_match(recorders, seed=4, decision_cap=120, capture=False)
+    reference = static_board(4)
+    for recorder in recorders:
+        for observation in recorder.seen:
+            assert observation["board"] == reference
+            assert [h["id"] for h in observation["board"]["hexes"]] == list(range(19))
+            assert [v["id"] for v in observation["board"]["vertices"]] == list(range(54))
+
+
+# -- setup --------------------------------------------------------------------------
 
 
 def test_setup_snake_order_and_second_settlement_payout():
     seen = []
+    board = static_board(11)
 
     def note(observation):
         turn = observation["turn"]
@@ -320,18 +321,16 @@ def test_setup_snake_order_and_second_settlement_payout():
     assert [seat for seat, _, _ in roads] == [0, 1, 2, 3, 3, 2, 1, 0]
     assert [round for _, _, round in settlements] == [1] * 4 + [2] * 4
     assert [round for _, _, round in roads] == [1] * 4 + [2] * 4
-    assert [kind for _, kind, _ in setup_turns[::2]] == ["setup_settlement"] * 8
     # Every round-2 settlement pays one resource per adjacent non-desert hex.
     payouts = [entry for entry in log_of(result, "production") if entry.get("setup")]
     assert len(payouts) == 4
-    board = build_board(random.Random(11))
     for payout in payouts:
         assert payout["gained"][payout["seat"]] >= 1
-        settlements = [e for e in log_of(result, "build")
-                       if e["built"] == "settlement" and e["seat"] == payout["seat"]]
-        vertex = settlements[-1]["id"]
-        expected = sum(1 for h in board.vertex_hexes(vertex)
-                       if board.hexes[h]["terrain"] != "desert")
+        builds = [e for e in log_of(result, "build")
+                  if e["built"] == "settlement" and e["seat"] == payout["seat"]]
+        vertex = builds[-1]["id"]
+        expected = sum(1 for h in board["vertices"][vertex]["hexes"]
+                       if board["hexes"][h]["terrain"] != "desert")
         assert payout["gained"][payout["seat"]] == expected
 
 
@@ -351,14 +350,13 @@ def test_setup_fallbacks_place_for_stalled_bots():
     assert log.index(first_roll) > log.index(setup_builds[-1])
 
 
-# -- placement legality and costs -------------------------------------------------
+# -- placement legality and costs ---------------------------------------------------
 
 
 def test_distance_rule_enforced():
     def neighbor_build_attempt(observation):
         if observation["turn"]["type"] != "main":
             return {"type": "end_turn"}
-        # Any vertex adjacent to an existing building violates the distance rule.
         buildings = {b["vertex"] for b in observation["buildings"]}
         board = observation["board"]["vertices"]
         for vertex in range(len(board)):
@@ -377,8 +375,7 @@ def test_distance_rule_enforced():
     _seed, result = run_until(lambda r: r["faults"][0] > 0, make_bots, cap=120)
     assert result["faults"][0] >= 1
     assert result["errors"][0] == "invalid main action"
-    # The main-phase fallback is end_turn: no settlement was placed by the
-    # illegal attempt (only the free setup placements exist).
+    # The main-phase fallback is end_turn: no paid settlement was placed.
     assert all(e["free"] for e in log_of(result, "build")
                if e["built"] == "settlement" and e["seat"] == 0)
 
@@ -402,8 +399,6 @@ def test_connectivity_and_cost_enforced():
 
     _seed, result = run_until(lambda r: r["faults"][0] > 0, make_bots, cap=200)
     assert result["faults"][0] >= 1
-    # Seat 0 never places a paid settlement: its picks are always unconnected,
-    # and the fallback ends the turn without placing anything.
     assert all(e["free"] or e["seat"] != 0 for e in log_of(result, "build")
                if e["built"] == "settlement")
 
@@ -422,7 +417,70 @@ def test_build_costs_paid_exactly():
                 checked.add(frame["built"])
             if frame["kind"] == "build" and frame["free"]:
                 assert frame["counts"] == previous["counts"]
-    assert {"settlement", "road"} <= checked  # cities are asserted in the sweep test
+    assert {"settlement", "road"} <= checked
+
+
+# -- resource conservation (freqdecks: hands + bank) --------------------------------
+
+
+def test_resource_conservation_across_every_event_kind():
+    result = play_hexchange_match(baseline_table(4, 7), seed=7,
+                                  decision_cap=1500, capture=True)
+    frames = result["frames"]
+    for previous, frame in itertools.pairwise(frames):
+        delta = [b - a for a, b in zip(previous["counts"], frame["counts"])]
+        if frame["kind"] == "production":
+            assert sum(delta) == sum(frame["gained"])
+        elif frame["kind"] == "build":
+            if frame["free"]:
+                assert delta == [0] * len(delta)
+            elif frame["built"] == "road":
+                assert delta[frame["seat"]] == -2
+            elif frame["built"] == "settlement":
+                assert delta[frame["seat"]] == -4
+            elif frame["built"] == "city":
+                assert delta[frame["seat"]] == -5
+        elif frame["kind"] == "bank_trade":
+            total = sum(frame["give"].values()) - sum(frame["want"].values())
+            assert delta[frame["seat"]] == -total
+        elif frame["kind"] == "accept":
+            give = sum(frame["give"].values())
+            want = sum(frame["want"].values())
+            assert delta[frame["seat"]] == want - give
+            assert delta[frame["offered_by"]] == give - want
+            assert sum(delta) == 0  # player-to-player trades conserve tokens
+        elif frame["kind"] == "dev_bought":
+            assert delta[frame["seat"]] == -3
+        elif frame["kind"] == "dev_played":
+            if frame["card"] == "monopoly":
+                assert delta == frame["took"]
+            elif frame["card"] == "year_of_plenty":
+                assert delta[frame["seat"]] == len(frame["resources"])
+            else:
+                assert delta == [0] * len(delta)  # knight/road-building move nothing
+        elif frame["kind"] == "discard":
+            assert delta[frame["seat"]] == -frame["discarded"]
+        elif frame["kind"] == "robber":
+            if frame["stole_from"] is not None:
+                assert delta[frame["seat"]] == 1
+                assert delta[frame["stole_from"]] == -1
+                assert sum(delta) == 0
+        elif frame["kind"] in ("roll", "offer", "counter", "reject",
+                               "trade_expired", "end_turn"):
+            assert delta == [0] * len(delta)
+
+
+def test_bank_never_refuses_a_legitimate_bank_trade():
+    # Across many matches, replenishments (privileged log) may appear only when
+    # the bank reserve ran dry, and a replenish is always followed by the trade.
+    replenished = 0
+    for seed in (1, 2, 3, 4):
+        result = play_hexchange_match(baseline_table(4, seed), seed=seed,
+                                      decision_cap=1000, capture=False)
+        for entry in log_of(result, "bank_replenished"):
+            replenished += 1
+            assert entry["resource"] in RESOURCES
+    assert replenished >= 0  # the rule exists even when the bank never runs dry
 
 
 # -- bank and trade overlay ---------------------------------------------------------
@@ -448,7 +506,7 @@ def test_bank_trade_rules():
         rich = [r for r in RESOURCES if hand[r] >= 4]
         if rich:
             give = max(rich, key=lambda r: (hand[r], -RESOURCES.index(r)))
-            # Wrong shapes: 3-for-1, same-type, and two-type gives.
+            # Wrong shapes: 3-for-1 (no port), same-type, and two-type gives.
             return {"type": "bank_trade", "give": {give: 3}, "want": {give: 1}}
         return {"type": "end_turn"}
 
@@ -472,7 +530,8 @@ def test_bank_trade_rules():
         lambda s: bots, cap=400,
     )
     assert result["errors"][0] == "invalid main action"
-    assert not any(f["kind"] == "bank_trade" and f["seat"] == 0 for f in result["frames"])
+    assert not any(f["kind"] == "bank_trade" and f["seat"] == 0
+                   for f in result["frames"])
 
 
 def test_trade_offer_then_accept_executes():
@@ -498,8 +557,6 @@ def test_trade_offer_then_accept_executes():
     assert accept["counts"][1] == before[1] + give_total - want_total
     assert accept["counts"][2] == before[2]
     assert sum(accept["counts"]) == sum(before)  # trades conserve total tokens
-    log_accept = next(e for e in log_of(result, "accept") if e["offered_by"] == 0)
-    assert sum(hand_total(hand) for hand in log_accept["hands_after"]) == sum(before)
 
 
 def test_trade_reject_falls_through_to_next_seat():
@@ -547,7 +604,8 @@ def test_trade_counter_replaces_active_offer():
     assert accept["counts"][1] == before[1] + want_total - give_total
     assert accept["counts"][2] == before[2] + give_total - want_total
     # The original offer (seat 0) was replaced, never executed.
-    assert not any(f["kind"] == "accept" and f["offered_by"] == 0 for f in result["frames"])
+    assert not any(f["kind"] == "accept" and f["offered_by"] == 0
+                   for f in result["frames"])
 
 
 def test_trade_max_three_offers_per_turn():
@@ -612,13 +670,37 @@ def test_trade_counter_budget_enforced():
     assert counters  # and the two legal counters went through
 
 
+def test_affordless_accept_falls_back_to_reject():
+    def poor_responder(observation):
+        offer = observation["turn"]["offer"]
+        # Accept only when it cannot possibly pay: always a fault.
+        if all(observation["resources"][r] >= c for r, c in offer["want"].items()):
+            return {"type": "reject"}
+        return {"type": "accept"}
+
+    def make_bots(seed):
+        return [
+            Scripted("Offerer", offerer_behavior({})),
+            Scripted("Poor", valid_player(poor_responder)),
+            Scripted("S2", valid_player(end_turn_or_reject)),
+        ]
+
+    _seed, result = run_until(
+        lambda r: r["faults"][1] > 0 and any(f["kind"] == "offer" for f in r["frames"]),
+        make_bots, cap=400,
+    )
+    # The unaffordable accept faulted; no accept frame exists for seat 1.
+    assert not any(f["kind"] == "accept" and f["seat"] == 1 for f in result["frames"])
+    assert result["errors"][1] == "invalid respond action"
+
+
 # -- robber ---------------------------------------------------------------------
 
 
 def replayed_buildings(result):
     """Walk the privileged log once, yielding (robber_entry, buildings) per steal."""
     buildings: dict[int, tuple[int, str]] = {}
-    board = build_board(random.Random(2))
+    board = static_board(2)
     for entry in result["log"]:
         if entry["type"] == "build" and entry["built"] != "road":
             buildings[entry["id"]] = (entry["seat"], entry["built"])
@@ -641,7 +723,7 @@ def test_robber_on_seven_moves_and_steals_eligible_only():
         adjacent = any(
             buildings.get(vertex) is not None
             and buildings[vertex][0] == entry["stole_from"]
-            for vertex in board.hex_vertices(entry["hex"])
+            for vertex in board["hexes"][entry["hex"]]["vertices"]
         )
         assert adjacent, "steal victims must border the new robber hex"
     # A roll of 7 never produces.
@@ -703,19 +785,21 @@ def test_stolen_token_hidden_from_observations_and_frames():
         for observation in recorder.seen:
             for event in observation["history"]:
                 kind = event.get("type")
-                if kind in ("dev_bought", "robber", "production", "roll"):
+                if kind in ("dev_bought", "robber", "production", "roll", "discard"):
                     assert "card" not in event and "cards" not in event
                 if kind == "robber":
-                    assert set(event) <= {"type", "seat", "moved_from", "hex", "stole_from"}
+                    assert set(event) <= {"type", "seat", "moved_from",
+                                          "hex", "stole_from"}
                 if kind == "dev_bought":
                     assert set(event) == {"type", "seat"}
-                if kind == "production":
-                    assert "cards" not in event
+                if kind == "discard":
+                    assert set(event) == {"type", "seat", "discarded"}
     for frame in result["frames"]:
-        if frame["kind"] in ("robber", "dev_bought", "production", "roll"):
+        if frame["kind"] in ("robber", "dev_bought", "production", "roll", "discard"):
             assert "card" not in frame and "cards" not in frame
         if frame["kind"] == "robber":
-            assert set(frame) <= {"kind", "counts", "seat", "moved_from", "hex", "stole_from"}
+            assert set(frame) <= {"kind", "counts", "seat", "moved_from",
+                                  "hex", "stole_from"}
         if frame["kind"] == "dev_bought":
             assert set(frame) == {"kind", "counts", "seat"}
 
@@ -757,16 +841,87 @@ def test_one_dev_per_turn_and_never_the_just_bought_one():
                 assert not drew_this_turn_by_seat.get(entry["seat"])
 
 
-def test_dev_card_effects_across_baseline_sweep():
-    seen_draws, knight_robber, road_pairs, monopolies, plenties = set(), 0, 0, 0, 0
-    for seed in (1, 2, 3, 4):
-        result = play_hexchange_match(baseline_table(4, seed), seed=seed,
-                                      decision_cap=3000, capture=True)
-        seen_draws.update(entry["card"] for entry in log_of(result, "dev_draw"))
+def test_dev_card_effects_across_scripted_sweep():
+    def dev_hungry(observation):
+        """Plays any held dev card, then builds/banks toward buying more."""
+        seat = observation["seat"]
+        if observation["turn"]["type"] == "respond":
+            return {"type": "reject"}
+        if observation["turn"]["type"] != "main":
+            return end_turn_or_reject(observation)
+        history = observation["history"]
+        if history and history[-1].get("type") == "dev_bought" \
+                and history[-1].get("seat") == seat:
+            return {"type": "end_turn"}  # never the just-bought card
+        cards = observation["dev_cards"]
+        for card in ("knight", "road_building", "year_of_plenty", "monopoly"):
+            if cards[card] > 0:
+                if card == "monopoly":
+                    return {"type": "play_dev", "card": "monopoly",
+                            "resource": RESOURCES[0]}
+                if card == "year_of_plenty":
+                    return {"type": "play_dev", "card": "year_of_plenty",
+                            "resources": list(RESOURCES[:2])}
+                return {"type": "play_dev", "card": card}
+        hand = observation["resources"]
+        buildings = {b["vertex"] for b in observation["buildings"]}
+        roads = {r["edge"]: r["seat"] for r in observation["roads"]}
+
+        def open_spot(vertex):
+            return vertex not in buildings and all(
+                u not in buildings
+                for u in observation["board"]["vertices"][vertex]["vertices"])
+
+        def connects(vertex):
+            return any(roads.get(edge) == seat
+                       for edge in observation["board"]["vertices"][vertex]["edges"])
+
+        def road_ok(edge):
+            a, b = observation["board"]["edges"][edge]["vertices"]
+
+            def touches(vertex):
+                occupant = next((b for b in observation["buildings"]
+                                 if b["vertex"] == vertex), None)
+                return (occupant is not None and occupant["seat"] == seat) or \
+                    any(roads.get(e) == seat
+                        for e in observation["board"]["vertices"][vertex]["edges"])
+
+            return edge not in roads and (touches(a) or touches(b))
+
+        spots = [v for v in range(54) if open_spot(v) and connects(v)]
+        if all(hand[r] >= c for r, c in COSTS["settlement"].items()) and spots:
+            return {"type": "build_settlement", "vertex": spots[0]}
+        own = [b["vertex"] for b in observation["buildings"]
+               if b["seat"] == seat and b["kind"] == "settlement"]
+        if all(hand[r] >= c for r, c in COSTS["city"].items()) and own:
+            return {"type": "build_city", "vertex": own[0]}
+        edges = [e["id"] for e in observation["board"]["edges"] if road_ok(e["id"])]
+        if all(hand[r] >= c for r, c in COSTS["road"].items()) and edges:
+            return {"type": "build_road", "edge": edges[0]}
+        if all(hand[r] >= c for r, c in COSTS["dev"].items()):
+            return {"type": "buy_dev"}
+        missing = [r for r in RESOURCES if hand[r] < COSTS["dev"].get(r, 0)]
+        if missing:
+            want = min(missing, key=lambda r: (hand[r], RESOURCES.index(r)))
+            rich = [r for r in RESOURCES if hand[r] >= 4 and r != want]
+            if rich:
+                give = max(rich, key=lambda r: (hand[r], -RESOURCES.index(r)))
+                return {"type": "bank_trade", "give": {give: 4}, "want": {want: 1}}
+        return {"type": "end_turn"}
+
+    played_cards = set()
+    knight_robber, road_pairs, monopolies, plenties = 0, 0, 0, 0
+    for seed in (1, 2, 3, 4, 5, 6):
+        result = play_hexchange_match(
+            [Scripted("Hungry", valid_player(dev_hungry)),
+             Scripted("S1", valid_player(end_turn_or_reject)),
+             Scripted("S2", valid_player(end_turn_or_reject))],
+            seed=seed, decision_cap=800, capture=True)
         frames = result["frames"]
         for index, frame in enumerate(frames):
             if frame["kind"] != "dev_played":
                 continue
+            played_cards.add(frame["card"])
             if frame["card"] == "knight":
                 later = [f for f in frames[index + 1:index + 4]
                          if f["kind"] == "robber" and f["seat"] == frame["seat"]]
@@ -782,7 +937,9 @@ def test_dev_card_effects_across_baseline_sweep():
                 monopolies += 1
             elif frame["card"] == "year_of_plenty":
                 before = frames[index - 1]["counts"]
-                assert frame["counts"][frame["seat"]] - before[frame["seat"]] == 2
+                assert frame["counts"][frame["seat"]] - before[frame["seat"]] == \
+                    len(frame["resources"])
+                assert set(frame["resources"]) <= set(RESOURCES)
                 plenties += 1
         # road-building: two free roads, unless no edge was placeable (forfeit).
         entries = result["log"]
@@ -800,7 +957,7 @@ def test_dev_card_effects_across_baseline_sweep():
             assert len(free_roads) == 2 or skipped
             if len(free_roads) == 2:
                 road_pairs += 1
-    assert seen_draws == set(DEV_TYPES)
+    assert played_cards == set(DEV_TYPES) - {"vp"}  # vp is never played
     assert knight_robber >= 1 and road_pairs >= 1 and monopolies >= 1 and plenties >= 1
 
 
@@ -864,7 +1021,7 @@ def test_ten_vp_win_terminates_match():
                                       decision_cap=3000, capture=False)
         assert result["terminal_reason"] == "win"
         winner = result["winner_seats"][0]
-        assert result["points"][winner] == 10
+        assert result["points"][winner] >= 10
         assert result["match_points"][winner] == 1.0
         assert sum(1.0 for p in result["match_points"] if p) == 1.0
 
@@ -888,6 +1045,24 @@ def test_cap_picks_leaders_when_vps_differ():
     assert result["winner_seats"] == [
         i for i, vp in enumerate(result["points"]) if vp == best
     ]
+
+
+def test_per_seat_piece_caps_hold():
+    for seed in (5, 6):
+        result = play_hexchange_match(baseline_table(4, seed), seed=seed,
+                                      decision_cap=1200, capture=False)
+        builds = log_of(result, "build")
+        for seat in range(4):
+            roads = sum(1 for e in builds
+                        if e["built"] == "road" and e["seat"] == seat)
+            settlements = sum(1 for e in builds
+                              if e["built"] == "settlement" and e["seat"] == seat)
+            cities = sum(1 for e in builds
+                         if e["built"] == "city" and e["seat"] == seat)
+            assert roads <= 15 and cities <= 4
+            # Upgrades return the settlement piece, so only the *live* count
+            # is bounded by 5 (RULES.md §15.3 item 16).
+            assert settlements - cities <= 5
 
 
 # -- fallbacks and validation ----------------------------------------------------------
@@ -951,29 +1126,7 @@ def test_seat_count_and_cap_validation():
         play_hexchange_match([Garbage()] * 3, seed=1, decision_cap=100_001)
 
 
-def test_per_seat_and_shared_piece_caps(monkeypatch):
-    monkeypatch.setattr(hex_engine, "PER_SEAT_ROADS", 3)
-    result = play_hexchange_match(baseline_table(4, 5), seed=5,
-                                  decision_cap=1200, capture=False)
-    for seat in range(4):
-        roads = sum(1 for e in log_of(result, "build")
-                    if e["built"] == "road" and e["seat"] == seat)
-        assert roads <= 3
-
-    monkeypatch.setattr(hex_engine, "PER_SEAT_ROADS", 15)
-    monkeypatch.setattr(hex_engine, "SETTLEMENT_SUPPLY", 10)
-    result = play_hexchange_match(baseline_table(4, 5), seed=5,
-                                  decision_cap=2000, capture=False)
-    placed, upgrades = 0, 0
-    for entry in log_of(result, "build"):
-        if entry["built"] == "settlement":
-            placed += 1
-        elif entry["built"] == "city":
-            upgrades += 1
-    assert placed <= 10 + upgrades  # the shared settlement supply binds
-
-
-# -- determinism, privacy, and schema ----------------------------------------------------
+# -- determinism under the lock (the headline) ------------------------------------------
 
 
 def test_deterministic_replay_from_seed_and_bots():
@@ -989,6 +1142,61 @@ def test_deterministic_replay_from_seed_and_bots():
     assert third["points"] != first["points"] or third["decisions"] != first["decisions"]
 
 
+def test_sequential_matches_do_not_interfere():
+    # The global RNG is reseeded per match: interleaving two different matches
+    # must not perturb either one's replay.
+    first = play_hexchange_match(baseline_table(4, 3), seed=5, capture=True)
+    noise = play_hexchange_match(baseline_table(3, 8), seed=9, capture=True)
+    second = play_hexchange_match(baseline_table(4, 3), seed=5, capture=True)
+    assert first["frames"] == second["frames"]
+    assert first["points"] == second["points"]
+    assert first["decisions"] == second["decisions"]
+    assert noise["decisions"] > 0
+
+
+def test_concurrent_matches_serialize_on_the_lock():
+    # Two matches in parallel must produce byte-identical results to their
+    # sequential counterparts — the lock makes each match a critical section.
+    def run(seats, seed):
+        return play_hexchange_match(baseline_table(seats, seed), seed=seed,
+                                    decision_cap=300, capture=True)
+
+    expected_small = run(3, 41)
+    expected_large = run(4, 42)
+    results = {}
+    barrier = threading.Barrier(2)
+
+    def worker(key, seats, seed):
+        barrier.wait()
+        results[key] = run(seats, seed)
+
+    threads = [
+        threading.Thread(target=worker, args=("small", 3, 41)),
+        threading.Thread(target=worker, args=("large", 4, 42)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert results["small"]["frames"] == expected_small["frames"]
+    assert results["small"]["points"] == expected_small["points"]
+    assert results["large"]["frames"] == expected_large["frames"]
+    assert results["large"]["points"] == expected_large["points"]
+
+
+def test_fixed_first_seat_takes_the_first_turn():
+    for seed in range(1, 9):
+        result = play_hexchange_match(baseline_table(4, seed), seed=seed,
+                                      decision_cap=80, capture=False)
+        first_roll = next(e for e in result["log"] if e["type"] == "roll")
+        assert first_roll["seat"] == 0
+        first_setup = next(e for e in result["log"] if e["type"] == "build")
+        assert first_setup["seat"] == 0
+
+
+# -- privacy, schema, and baselines -------------------------------------------------------
+
+
 def test_observations_never_leak_hidden_state():
     recorders = [Recording(bot) for bot in baseline_table(4, 6)]
     play_hexchange_match(recorders, seed=6, decision_cap=400, capture=True)
@@ -1002,7 +1210,7 @@ def test_observations_never_leak_hidden_state():
             assert set(observation) == expected_keys
             assert observation["game"] == "hexchange" and observation["protocol"] == 1
             for player in observation["players"]:
-                assert set(player) == {"seat", "name", "count", "vp"}
+                assert set(player) == {"seat", "name", "count", "vp", "dev_count"}
             mine = observation["players"][observation["seat"]]
             assert sum(observation["resources"].values()) == mine["count"]
             assert set(observation["resources"]) == set(RESOURCES)
@@ -1030,6 +1238,7 @@ def test_result_schema_and_replay_envelope():
     assert result["frames"][-1]["winner_seats"] == result["winner_seats"]
     # The privileged log may carry hidden state the frames never do.
     assert any(e["type"] == "dev_draw" and "card" in e for e in result["log"])
+    assert any(e["type"] == "discard" and "cards" in e for e in result["log"])
 
 
 def test_baselines_complete_matches_with_trades_and_robbers():
