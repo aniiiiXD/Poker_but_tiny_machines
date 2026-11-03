@@ -156,8 +156,8 @@ export function Workshop({ me }: { me: Data | null }) {
   const running = !!job && !["completed", "failed"].includes(job.status);
   return (
     <Page
-      title="The bot workshop"
-      lead="Write a strategy, save your bot, and see how it plays."
+      title="The agent workshop"
+      lead="Write a strategy or load your weights, submit, and see how it plays."
       eyebrow="Build"
     >
       <SubmissionSources me={me} onAccepted={subs.load} game={game} />
@@ -200,7 +200,7 @@ export function Workshop({ me }: { me: Data | null }) {
           <CodeEditor source={source} onChange={setSource} dirty={dirty} />
           <div className="editor-actions">
             <label className="field">
-              Bot name
+              Agent name
               <input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
             </label>
             <Button
@@ -248,8 +248,8 @@ export function Workshop({ me }: { me: Data | null }) {
               {active
                 ? `Active bot: ${active.name}`
                 : !me?.user
-                  ? "Log in and save a bot to practice with it. The baseline demo works without an account."
-                  : "Save a bot to practice with it. Custom bots need a team and the sandbox running."}
+                  ? "Log in and submit an agent to practice with it. The baseline demo works without an account."
+                  : "Submit an agent to practice with it. Custom bots need a team and the sandbox running."}
             </p>
             {job && (
               <div className="job">
@@ -315,10 +315,10 @@ export function Workshop({ me }: { me: Data | null }) {
           </div>
 
           <div className="panel">
-            <h3 className="display-3">Saved bots</h3>
+            <h3 className="display-3">Saved agents</h3>
             {!me?.user ? (
               <p className="muted" style={{ marginTop: 6 }}>
-                Log in to save your bot.
+                Log in to save your agent.
               </p>
             ) : subs.data?.submissions?.filter((s: Data) => s.game === game).length ? (
               <div style={{ marginTop: 6 }}>

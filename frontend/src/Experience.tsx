@@ -129,7 +129,7 @@ function HowItWorks({ starter }: { starter: Data | null }) {
               <div>
                 <h3>Submit and watch</h3>
                 <p>
-                  Save your bot, run a practice table, then enter an event. Your bot
+                  Submit an agent, run a practice match, then enter an event. Your agent
                   plays; you watch every decision in the replay.
                 </p>
               </div>
@@ -311,7 +311,7 @@ export function ArenaHome() {
       <section className="hero" aria-labelledby="hero-title">
         <div className="wrap hero-grid">
           <div className="hero-copy">
-            <p className="label">Student bot competition · six games</p>
+            <p className="label">Agent vs agent · six games</p>
             <h1 id="hero-title" className="display-hero">
               <span>
                 CAN YOUR
@@ -322,14 +322,14 @@ export function ArenaHome() {
               </span>
             </h1>
             <p className="hero-sub">
-              Build a Python bot for poker, bluff, hearts, rummy, uno, or
-              hexchange — throw it on the felt against other students' bots,
-              and watch every decision it makes. Simulated stakes. Real
+              Submit weights or run Python scripts — poker, bluff, hearts,
+              rummy, uno, or hexchange. Put your agent on the felt against the
+              field and watch every decision it makes. Simulated stakes. Real
               strategy.
             </p>
             <div className="hero-actions">
               <A to="/workshop" className="exp-cta primary">
-                Build your bot
+                Submit an agent
               </A>
               <A to="/replays" className="exp-cta">
                 Watch a game
@@ -359,7 +359,7 @@ export function SponsorsPage() {
     },
     {
       title: "Prize",
-      body: "Help create prizes for student teams at an event.",
+      body: "Help create prizes for winning agents at an event.",
     },
     {
       title: "Campus",
@@ -377,7 +377,7 @@ export function SponsorsPage() {
         </h1>
         <p className="page-lead">
           We are opening founding partnerships to organizations that want to
-          help students build, compete, and learn together.
+          help builders compete, compare agents, and learn together.
         </p>
       </header>
       <div className="page-body">
@@ -399,7 +399,7 @@ export function SponsorsPage() {
             <h2 className="display-3">What partners get</h2>
             <p>
               Your name on the event your support makes possible: the schedule,
-              the standings, and the replays students share. No invented metrics;
+              the standings, and the replays teams share. No invented metrics;
               the platform reports exactly what happens.
             </p>
             <p style={{ marginTop: 16 }}>
@@ -466,7 +466,7 @@ export function ContactPage() {
         <div className="contact-grid">
           <div>
             <p>
-              Students: ask about events, teams, or the bot interface. Colleges:
+              Agents are submitted as scripts or weights. Organizers:
               ask about running a league on campus. Sponsors: ask about founding
               partnerships.
             </p>

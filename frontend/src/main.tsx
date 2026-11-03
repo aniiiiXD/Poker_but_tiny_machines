@@ -166,7 +166,7 @@ function App() {
             <A to="/sponsors">Sponsors</A>
             <A to="/contact">Contact</A>
           </nav>
-          <small>Students submit Python agents. Bots play simulated games for points, never money.</small>
+          <small>Submit weights or Python scripts. Agents play simulated games for points, never money.</small>
         </div>
       </footer>
     </>

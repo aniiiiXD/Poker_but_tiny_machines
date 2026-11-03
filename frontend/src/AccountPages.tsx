@@ -17,7 +17,7 @@ export function Auth({ refresh }: { refresh: () => void }) {
   return (
     <Page
       title={register ? "Join the arena" : "Welcome back"}
-      lead="Your team, your bot, your next move."
+      lead="Your team, your agent, your next move."
       eyebrow="Account"
     >
       <div className="auth-wrap">

@@ -52,7 +52,7 @@ const BLUFF_RULES = [
     ],
   },
   {
-    title: "What your bot sees",
+    title: "What your agent sees",
     body: [
       <>Only public information and your own hand: card counts, declared ranks, challenge decisions that already happened, and revealed challenged batches. Never the deck order, opponent hands, or face-down pile. The starter kit in the Workshop has a working example.</>,
     ],
