@@ -51,8 +51,16 @@ function StatStrip() {
 }
 
 function Exhibit() {
-  const { data } = useData("/replays");
-  const exhibition = data?.replays?.find((r: Data) => r.source === "exhibition");
+  const games = useData("/games");
+  const replays = useData("/replays");
+  const [game, setGame] = useState("poker");
+  const catalog: Data[] = games.data?.games ?? [];
+  const pool = replays.data?.replays ?? [];
+  const current =
+    game === "poker"
+      ? pool.find((r: Data) => r.source === "exhibition") ?? pool.find((r: Data) => r.game === "poker")
+      : pool.find((r: Data) => r.game === game);
+  const currentName = catalog.find((g: Data) => g.id === game)?.name ?? game;
   return (
     <section className="section ink" aria-labelledby="exhibit-title">
       <div className="wrap">
@@ -60,19 +68,35 @@ function Exhibit() {
           <div>
             <p className="label">Exhibit A</p>
             <h2 id="exhibit-title" className="display-2">
-              The table, straight from the engine
+              Straight from the engine
             </h2>
           </div>
           <p className="exhibit-note">
-            Eight baseline bots · completed exhibition · every move replayed
+            {currentName} · latest replay · every decision in order
           </p>
         </div>
+        <div className="game-tabs exhibit-tabs" role="tablist" aria-label="Replay game">
+          {catalog.map((g: Data) => (
+            <button
+              key={g.id}
+              role="tab"
+              aria-selected={game === g.id}
+              className={"game-tab" + (game === g.id ? " on" : "")}
+              onClick={() => setGame(g.id)}
+            >
+              {g.name}
+            </button>
+          ))}
+        </div>
         <div className="exhibit-stage">
-          {exhibition ? (
-            <Replay id={exhibition.id} compact />
+          {current ? (
+            <Replay id={current.id} compact />
           ) : (
             <div className="replay-placeholder">
-              <span>The first exhibition replay will appear here.</span>
+              <span>
+                No {currentName} replays yet — the floor is open. Run a practice
+                match in the workshop and it lands here.
+              </span>
             </div>
           )}
         </div>

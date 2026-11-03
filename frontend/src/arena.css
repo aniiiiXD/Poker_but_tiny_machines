@@ -708,3 +708,9 @@ details pre {
 .hero-tile.soon { opacity: 0.55; }
 @media (max-width: 900px) { .hero-gamegrid { grid-template-columns: repeat(2, 1fr); } }
 @media (prefers-reduced-motion: reduce) { .hero-tile { transition: none; } }
+/* Exhibit tabs + compact seat fit for 8 seats */
+.exhibit-tabs { margin-bottom: 16px; }
+.exhibit-tabs .game-tab { border-color: var(--ivory); color: var(--ivory); background: transparent; }
+.exhibit-tabs .game-tab.on { background: var(--ivory); color: var(--ink); }
+.exhibit-tabs .game-tab:hover, .exhibit-tabs .game-tab:focus-visible { border-color: var(--red); }
+.compact .seats { grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); }
