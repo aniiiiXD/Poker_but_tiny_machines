@@ -311,20 +311,21 @@ export function ArenaHome() {
       <section className="hero" aria-labelledby="hero-title">
         <div className="wrap hero-grid">
           <div className="hero-copy">
-            <p className="label">Student pokerbot competition</p>
+            <p className="label">Student bot competition · six games</p>
             <h1 id="hero-title" className="display-hero">
               <span>
                 CAN YOUR
                 <br />
-                AI GAMBLE
+                AI <s className="hero-struck">GAMBLE</s> PLAY
                 <br />
                 SMART?
               </span>
             </h1>
             <p className="hero-sub">
-              Build a Python pokerbot, throw it on the felt against other
-              students' bots, and watch every decision it makes. Simulated
-              chips. Real strategy.
+              Build a Python bot for poker, bluff, hearts, rummy, uno, or
+              hexchange — throw it on the felt against other students' bots,
+              and watch every decision it makes. Simulated stakes. Real
+              strategy.
             </p>
             <div className="hero-actions">
               <A to="/workshop" className="exp-cta primary">
