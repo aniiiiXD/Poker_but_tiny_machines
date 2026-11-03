@@ -67,18 +67,18 @@ def send_mail(to: str, subject: str, body: str) -> str:
 def verification_email(to: str, token: str) -> str:
     link = f"{public_url()}/verify?token={token}"
     body = (
-        "Welcome to Campus Arena.\n\n"
+        "Welcome to Stack Theory.\n\n"
         f"Verify your email to submit bots:\n{link}\n\n"
         "The link expires in 24 hours. If you did not sign up, ignore this message."
     )
-    return send_mail(to, "Campus Arena · verify your email", body)
+    return send_mail(to, "Stack Theory · verify your email", body)
 
 
 def reset_email(to: str, token: str) -> str:
     link = f"{public_url()}/reset?token={token}"
     body = (
-        "A password reset was requested for your Campus Arena account.\n\n"
+        "A password reset was requested for your Stack Theory account.\n\n"
         f"Set a new password:\n{link}\n\n"
         "The link expires in 1 hour. If this was not you, ignore this message."
     )
-    return send_mail(to, "Campus Arena · password reset", body)
+    return send_mail(to, "Stack Theory · password reset", body)

@@ -1,5 +1,5 @@
 [Unit]
-Description=Campus Arena worker %i
+Description=Stack Theory worker %i
 After=network.target docker.service
 Wants=docker.service
 

@@ -149,3 +149,12 @@ def test_hand_log_spans_multiple_hands():
     assert result['hands'] >= 2
     assert len(result['log']) == result['hands']
     assert [entry['hand'] for entry in result['log']] == sorted(entry['hand'] for entry in result['log'])
+
+
+def test_sandbox_down_during_a_decision_aborts_table():
+    class DiesDuringPlay:
+        name = 'Down'
+        def reset(self): pass
+        def act(self, observation): raise SandboxDown('Docker became unavailable')
+    with pytest.raises(SandboxDown):
+        play_table([DiesDuringPlay(), AllIn()], 5, max_hands=1)

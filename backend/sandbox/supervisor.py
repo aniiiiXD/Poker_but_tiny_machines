@@ -121,8 +121,18 @@ def receive(channel, deadline):
             return bytes(data)
 
 
-def valid_action(result):
+def valid_action(result, protocol="poker"):
     if type(result) is not dict:
+        return False
+    if protocol == "bluff":
+        kind = result.get("type")
+        if kind in ("challenge", "pass"):
+            return True
+        if kind == "play":
+            cards = result.get("cards")
+            return (type(cards) is list and 1 <= len(cards) <= 4 and
+                    all(type(card) is str and len(card) == 2 and
+                        card[0] in "A23456789TJQK" and card[1] in "cdhs" for card in cards))
         return False
     action = result.get("action")
     if action not in ("fold", "check", "call", "raise"):
@@ -131,6 +141,19 @@ def valid_action(result):
         amount = result.get("amount")
         return type(amount) is int and 0 <= amount <= 2**53 - 1
     return True
+
+
+def clean_result(result, protocol="poker"):
+    """Rebuild the reply from allow-listed fields only."""
+    if protocol == "bluff":
+        kind = result.get("type")
+        if kind == "play":
+            return {"type": "play", "cards": list(result["cards"])}
+        return {"type": kind}
+    clean = {"action": result["action"]}
+    if clean["action"] == "raise":
+        clean["amount"] = result["amount"]
+    return clean
 
 
 def prepare_project(encoded):
@@ -182,6 +205,9 @@ def main():
             source, project_dir = prepare_project(config['project_zip'])
         except (ValueError, OSError, UnicodeError, zipfile.BadZipFile):
             fatal('Invalid model project archive')
+    protocol = config.get("protocol", "poker")
+    if protocol not in ("poker", "bluff"):
+        fatal("Unsupported protocol")
     milliseconds = config.get("decision_ms")
     if not isinstance(source, str) or len(source.encode()) > MAX_SOURCE:
         fatal("Invalid source size")
@@ -229,12 +255,10 @@ def main():
             if completed > deadline:
                 raise TimeoutError
             response = json.loads(raw)
-            if response.get("nonce") != nonce or not valid_action(response.get("result")):
+            if response.get("nonce") != nonce or not valid_action(response.get("result"), protocol):
                 fatal("Bot returned an invalid action")
             result = response["result"]
-            clean = {"action": result["action"]}
-            if clean["action"] == "raise":
-                clean["amount"] = result["amount"]
+            clean = clean_result(result, protocol)
             emit({"ok": True, "result": clean, "elapsed_ms": (completed - start) * 1000})
         except TimeoutError:
             fatal(f"Decision exceeded {milliseconds:g} ms wall deadline")

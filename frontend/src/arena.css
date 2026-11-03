@@ -1,6 +1,6 @@
 @import url("/fonts/barlow.css");
 
-/* Campus Arena — one system. Bone paper, ink type, red action, Barlow voice. */
+/* Stack Theory — one system. Bone paper, ink type, red action, Barlow voice. */
 
 :root {
   --bone: #f1ece2;
@@ -105,6 +105,7 @@ img, svg { display: block; max-width: 100%; }
   width: 30px; height: 30px; background: var(--red); color: var(--ivory);
   display: grid; place-items: center; font-size: 17px; line-height: 1;
 }
+.brand-mark svg { width: 21px; height: 21px; }
 .site-nav { display: flex; gap: clamp(16px, 3.5vw, 40px); }
 .site-nav a {
   font-family: var(--condensed); font-weight: 700; text-transform: uppercase;
@@ -612,3 +613,63 @@ details pre {
 /* ---------- experience page shell overrides (sponsors/contact/rules pages use Page) ---------- */
 
 .exp-page-label { margin-bottom: 10px; }
+
+/* Repository and project submissions */
+.submission-sources {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid var(--ink); margin-bottom: clamp(32px, 4vw, 52px);
+}
+.source-panel { min-width: 0; padding: clamp(20px, 2.6vw, 30px); background: var(--ivory); }
+.source-panel + .source-panel { border-left: 1px solid var(--ink); }
+.source-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.source-heading h2, .source-intro h2 { font-size: clamp(28px, 3.2vw, 42px); }
+.source-kicker { color: var(--red-deep); font-family: var(--condensed); font-weight: 700; font-size: 14px; margin-bottom: 7px; }
+.source-index { color: var(--line); font-family: var(--condensed); font-size: 46px; font-weight: 800; line-height: .85; }
+.source-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.source-actions a { text-decoration: none; }
+.source-hint { margin-top: 12px; color: var(--muted); font-size: 14px; }
+.source-form { margin-top: 18px; }
+.source-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.source-download { display: inline-block; margin-top: 16px; }
+.source-list { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 16px; }
+.source-list h3 { font-size: 19px; margin: 0 0 8px; }
+.source-item { display: flex; justify-content: space-between; gap: 12px; align-items: start; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.source-item > div:first-child { min-width: 0; overflow-wrap: anywhere; }
+.source-item small { display: block; color: var(--muted); }
+.source-item small.source-error { color: var(--red-deep); }
+.source-item-actions { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: flex-end; }
+.source-item-actions button { font-size: 13px; white-space: nowrap; }
+.source-status { flex: none; color: var(--red-deep); text-transform: capitalize; font-weight: 600; }
+.source-result { margin-top: 16px; padding: 12px; background: var(--bone-2); font-size: 14px; }
+.source-panel > .notice, .source-panel > .success { margin-top: 14px; }
+.source-intro { display: flex; align-items: end; justify-content: space-between; gap: 20px; border: 1px solid var(--ink); background: var(--ivory); padding: clamp(20px, 3vw, 30px); margin-bottom: clamp(32px, 4vw, 52px); }
+.source-intro > p { max-width: 38ch; color: var(--muted); }
+.auth-divider { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; text-align: center; }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.github-login { text-align: center; text-decoration: none; }
+@media (max-width: 760px) {
+  .submission-sources { grid-template-columns: 1fr; }
+  .source-panel + .source-panel { border-left: 0; border-top: 1px solid var(--ink); }
+  .source-intro { display: block; }
+  .source-intro > p { margin-top: 14px; }
+}
+@media (max-width: 420px) { .source-fields { grid-template-columns: 1fr; } }
+
+/* Game selection and Bluff replay */
+.game-tabs { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: clamp(20px, 3vw, 30px); }
+.game-tab {
+  font: inherit; font-size: 14px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 9px 18px; border: 1px solid var(--ink); background: var(--ivory);
+  color: var(--ink); cursor: pointer;
+}
+.game-tab.on { background: var(--ink); color: var(--ivory); }
+.game-tab:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.bluff-table { display: block; }
+.bluff-seat small { display: block; color: var(--muted); }
+.bluff-state {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  justify-content: space-between; gap: 8px 18px; margin-top: 14px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .game-tab { transition: none; }
+}

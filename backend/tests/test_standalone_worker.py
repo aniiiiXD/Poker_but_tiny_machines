@@ -98,3 +98,19 @@ def test_standalone_worker_once_exits_nonzero_on_failure(data_dir):
         row = dict(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
     assert row['status'] == 'failed'
     assert row['error']
+
+
+def test_api_lifespan_starts_and_stops_embedded_worker(data_dir, monkeypatch):
+    import threading
+    from fastapi.testclient import TestClient
+    from arena.app import app
+
+    monkeypatch.delenv('ARENA_TESTING', raising=False)
+    monkeypatch.delenv('ARENA_EMBEDDED_WORKER', raising=False)
+    monkeypatch.setattr(worker, 'seed_exhibition', lambda: None)
+    monkeypatch.setattr(worker, '_stop', threading.Event())
+    with TestClient(app) as client:
+        assert client.get('/api/models/tracks').status_code == 200
+        assert len(worker._threads) >= 2
+        assert all(thread.is_alive() for thread in worker._threads)
+    assert worker._threads == []

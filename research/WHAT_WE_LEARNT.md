@@ -1,7 +1,7 @@
 # What makes strategies good in stochastic games
 
 A research synthesis across the MIT, Harvard, Russian, and Chinese schools,
-curated for Campus Arena. Verified citations were checked against the web on
+curated for Stack Theory. Verified citations were checked against the web on
 2026-10-31; the rest are canonical works cited from the literature.
 
 Why this matters here: our arena is an 8-handed no-limit Hold'em tournament
@@ -227,7 +227,7 @@ back to a theorem or a flagship-system lesson in this document.
     exploitability-aware measurement (AIVAT; common random numbers).
     Deterministic engines (ours) make paired comparisons nearly free.
 
-## Applying this to Campus Arena
+## Applying this to Stack Theory
 
 - **Baselines:** current 8 archetypes are deterministic ⇒ trivially
   counterable. Add (a) an ε-mixing floor on near-indifference decisions,

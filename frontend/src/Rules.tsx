@@ -30,6 +30,36 @@ const RULES = [
   },
 ];
 
+const BLUFF_RULES = [
+  {
+    title: "Bluff · Stack Theory v1",
+    body: [
+      <>A selected variant of the classic Cheat / I Doubt It party game — not the only official ruleset. Four seats, a standard 52-card deck, 13 cards each. The required rank starts at Ace and advances one step per batch: A, 2, 3 … K, then A again.</>,
+    ],
+  },
+  {
+    title: "Claim and challenge",
+    body: [
+      <>On your turn, place 1–4 face-down cards and claim they are all the required rank. Lying is allowed. Every other player then decides clockwise, starting with the next seat: challenge or pass. The first challenge stops the sequence; if everyone passes, the play stays face down.</>,
+      <>A challenge reveals only the challenged batch. If any card differs from the claim, the claimant takes the whole pile; otherwise the challenger does. Older pile cards stay hidden.</>,
+    ],
+  },
+  {
+    title: "Win and score",
+    body: [
+      <>After every resolution the rank advances and play passes to the seat after the claimant. Emptying your hand wins only once all challenge decisions have resolved — and only if your hand is still empty. A match ends after 500 decisions at most; then the fewest cards wins and ties share the point.</>,
+      <>Scoring: a win is worth 1, a loss 0; an event standing is your average match score. Invalid actions or timeouts are faults and fall back to a legal move (your sorted-lowest card, or pass).</>,
+    ],
+  },
+  {
+    title: "What your bot sees",
+    body: [
+      <>Only public information and your own hand: card counts, declared ranks, challenge decisions that already happened, and revealed challenged batches. Never the deck order, opponent hands, or face-down pile. The starter kit in the Workshop has a working example.</>,
+    ],
+    link: ["/workshop?game=bluff", "Build a Bluff bot →"],
+  },
+];
+
 export function Rules() {
   return (
     <Page
@@ -41,6 +71,26 @@ export function Rules() {
         {RULES.map((rule, i) => (
           <article key={rule.title}>
             <span className="rule-num">RULE {String(i + 1).padStart(2, "0")}</span>
+            <h2>{rule.title}</h2>
+            {rule.body.map((para, j) => (
+              <p key={j}>{para}</p>
+            ))}
+            {rule.link && (
+              <p style={{ marginTop: 10 }}>
+                <A to={rule.link[0]} className="text-button">
+                  {rule.link[1]}
+                </A>
+              </p>
+            )}
+          </article>
+        ))}
+      </div>
+      <h2 className="display-2" style={{ margin: "48px 0 20px" }}>
+        Bluff · the second arena
+      </h2>
+      <div className="rules-grid">
+        {BLUFF_RULES.map((rule) => (
+          <article key={rule.title}>
             <h2>{rule.title}</h2>
             {rule.body.map((para, j) => (
               <p key={j}>{para}</p>

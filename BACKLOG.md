@@ -6,7 +6,7 @@ Must-haves before hosting a real event, then integrity, polish, scale. Marked `[
 
 Local backend implemented for GitHub App OAuth, repository discovery/authorization, signed push webhooks, commit snapshots and queued sandbox validation. The GitHub App and UI still need setup and a real end-to-end test; see [implementation notes](plans/GITHUB_MODEL_BACKEND.md).
 
-- [ ] Let participants sign in with GitHub and create or link their Campus Arena account. Keep repository access separate from login.
+- [ ] Let participants sign in with GitHub and create or link their Stack Theory account. Keep repository access separate from login.
 - [ ] Provide a starter repository with the bot interface and instructions. Let a team connect a selected public or private repository and branch through a GitHub App with only the permissions needed.
 - [ ] On a push to the connected branch, verify the webhook signature, fetch the exact commit, and create a team-owned submission tied to the repository, branch, and immutable commit SHA. Handle duplicate deliveries safely.
 - [ ] Run a simple server-side validation pipeline: check the submission against the event's file and resource limits, then run a smoke test in the isolated bot sandbox. Show queued, testing, accepted, and failed states with useful errors.
@@ -18,7 +18,7 @@ The initial category uses the existing single-file Python limits. Larger codebas
 
 ## Second priority: model-based poker competition
 
-Give participants a way to submit their own poker-playing model projects, beyond the single-file Python bot category. They can train models themselves and submit code plus an inference artifact; the arena runs inference during games. An initial CPU-only, standard-library project track with a 16 MiB ZIP limit is implemented locally. Larger projects, external ML libraries, GPUs and public deployment remain future work.
+Give participants a way to submit their own poker-playing model projects, beyond the single-file Python bot category. They can train models themselves and submit code plus an inference artifact; the arena runs inference during games. An initial CPU-only Python and NumPy project track with a 16 MiB ZIP limit is implemented locally. Larger projects, additional ML libraries, GPUs and public deployment remain future work.
 
 - [ ] Define tracks with published, equal rules within each event: a lightweight CPU track and a larger model track. Decide resource limits, eligible model types, dependency policies, decision time, hardware, and whether GPU inference is supported before opening each track.
 - [ ] Extend GitHub submissions to accept a structured project and a versioned model artifact. Record the exact code commit, artifact checksum, runtime image, and category rules for reproducibility; never fetch arbitrary model files during a live game.

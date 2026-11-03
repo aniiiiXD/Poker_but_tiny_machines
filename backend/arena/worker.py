@@ -16,7 +16,7 @@ from .sandbox import ContainerBot, ModelContainerBot, SandboxDown, sandbox_statu
 
 log = logging.getLogger(__name__)
 _stop = threading.Event()
-_thread = None
+_threads = []
 LEASE_SECONDS = 120
 
 
@@ -32,32 +32,75 @@ def ident():
     return uuid.uuid4().hex
 
 
-def save_replay(title, result, source, owner_id=None, team_id=None):
+BLUFF_PUBLIC_SUMMARY_FIELDS = frozenset({
+    "points", "winner_seats", "terminal_reason", "faults", "errors",
+    "hands", "matches", "decisions", "final_rank", "names",
+})
+
+
+def public_replay_summary(summary, game_id):
+    """Filter stored legacy replays as well as newly created ones."""
+    if game_id == "bluff":
+        return {key: value for key, value in summary.items() if key in BLUFF_PUBLIC_SUMMARY_FIELDS}
+    return summary
+
+
+def insert_replay(c, title, result, source, owner_id=None, team_id=None, game_id="poker"):
     replay_id = ident()
-    with db.connect(True) as c:
-        c.execute(
-            "INSERT INTO replays VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                replay_id,
-                title,
-                time.time(),
-                result["hands"],
-                source,
-                owner_id,
-                team_id,
-                json.dumps(result["frames"]),
-                json.dumps({k: v for k, v in result.items() if k != "frames"}),
-            ),
-        )
+    frames = result["frames"]
+    if game_id != "poker":
+        # Versioned game replay wrapper; frames inside carry public data only.
+        frames = {"game": game_id, "protocol": 1,
+                  "names": result.get("names", []), "frames": result["frames"]}
+    c.execute(
+        """INSERT INTO replays(id,title,created_at,hand_count,source,owner_id,team_id,
+           frames,summary,game_id) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (
+            replay_id,
+            title,
+            time.time(),
+            result["hands"],
+            source,
+            owner_id,
+            team_id,
+            json.dumps(frames),
+            json.dumps(public_replay_summary({k: v for k, v in result.items() if k != "frames"}, game_id)),
+            game_id,
+        ),
+    )
     return replay_id
+
+
+def save_replay(title, result, source, owner_id=None, team_id=None, game_id="poker"):
+    with db.connect(True) as c:
+        return insert_replay(c, title, result, source, owner_id, team_id, game_id)
+
+
+def _track_scope(track: str) -> str:
+    """SQL predicate limiting a submission set to one track."""
+    if track == "model":
+        return "id IN (SELECT submission_id FROM model_submissions)"
+    return "id NOT IN (SELECT submission_id FROM model_submissions)"
+
+
+def deactivate_active(c, team_id: str, game_id: str, track: str):
+    """Drop active flags only for the same team + game + track."""
+    c.execute(
+        f"UPDATE submissions SET active=0 WHERE team_id=? AND game_id=? AND {_track_scope(track)}",
+        (team_id, game_id),
+    )
 
 
 def enqueue_round(event_id, manual=False):
     """Freeze accepted submission IDs atomically at round creation, never mid-round."""
+    from .games import get_game
+
     with db.connect(True) as c:
         event = c.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
         if not event or event["exhibition"] or event["status"] == "completed":
             raise ValueError("This event cannot start a scored round.")
+        # Reject unsupported or version-mismatched games before queueing.
+        spec = get_game(event["game_id"], event["rules_version"])
         existing = c.execute("SELECT * FROM rounds WHERE event_id=? ORDER BY number", (event_id,)).fetchall()
         if any(r["status"] in ("queued", "running") for r in existing):
             raise ValueError("A round is already queued or running.")
@@ -74,12 +117,13 @@ def enqueue_round(event_id, manual=False):
             """SELECT t.id,t.name,s.id AS submission_id,MIN(u.college) AS college
           FROM entries e JOIN teams t ON t.id=e.team_id
           JOIN submissions s ON s.team_id=t.id AND s.active=1 AND s.status='accepted'
+            AND s.game_id=? AND s.rules_version=?
           JOIN users u ON u.team_id=t.id
           LEFT JOIN model_submissions m ON m.submission_id=s.id
           WHERE e.event_id=? AND ((?='model' AND m.submission_id IS NOT NULL)
                                OR (?='classic' AND m.submission_id IS NULL))
           GROUP BY t.id,s.id ORDER BY t.id""",
-            (event_id, track, track),
+            (event["game_id"], event["rules_version"], event_id, track, track),
         ).fetchall()
         if not teams:
             raise ValueError("No entered teams have an accepted bot yet.")
@@ -103,6 +147,9 @@ def enqueue_round(event_id, manual=False):
             "round_id": round_id,
             "number": number,
             "seed": secrets.randbits(52),
+            "game_id": event["game_id"],
+            "rules_version": event["rules_version"],
+            "seats": list(spec.seats),
         }
         job_id = ident()
         c.execute(
@@ -115,6 +162,9 @@ def enqueue_round(event_id, manual=False):
 
 def practice(job):
     payload = db.json_value(job["payload"])
+    game_id = payload.get("game_id") or payload.get("game") or "poker"
+    if game_id != "poker":
+        return _practice_game(job, payload, game_id)
     bots = make_baselines(8)
     sandbox_bot = None
     try:
@@ -154,33 +204,97 @@ def practice(job):
             sandbox_bot.close()
 
 
+def _owned_submission(payload):
+    """Load a team-owned accepted submission for practice/validation runs."""
+    with db.connect() as c:
+        submission = c.execute(
+            "SELECT * FROM submissions WHERE id=?", (payload["submission_id"],)
+        ).fetchone()
+        model = c.execute('SELECT 1 FROM model_submissions WHERE submission_id=?',
+                          (payload['submission_id'],)).fetchone()
+    if not submission:
+        raise ValueError("Submission no longer exists.")
+    return submission, bool(model)
+
+
+def _practice_game(job, payload, game_id):
+    """Game-specific practice: matching seats, baseline fill, seeded matches."""
+    from .games import get_game
+
+    spec = get_game(game_id)
+    adapter = spec.adapter
+    seats = spec.seats[0]
+    bots = adapter.make_baselines(seats, seed=payload["seed"])
+    sandbox_bot = None
+    try:
+        if payload.get("submission_id"):
+            submission, model = _owned_submission(payload)
+            bot_class = ModelContainerBot if model else ContainerBot
+            decision_ms = adapter.decision_ms["model" if model else "classic"]
+            sandbox_bot = bot_class(
+                db.DATA / 'bots' / (submission['id'] + ('.zip' if model else '.py')),
+                submission['name'], decision_ms=decision_ms,
+                protocol=adapter.protocol,
+            )
+            bots[0] = sandbox_bot
+        matches = max(1, min(8, int(payload.get("matches") or 1)))
+        points = [0.0] * seats
+        faults = [0] * seats
+        errors: list[str | None] = [None] * seats
+        replay_result = None
+        played = 0
+        try:
+            for index in range(matches):
+                result = adapter.run_match(
+                    bots, payload["seed"] + index,
+                    {"decision_cap": payload.get("decision_cap")},
+                    capture=index == 0,
+                )
+                played += 1
+                points = [p + r for p, r in zip(points, result["points"])]
+                faults = [f + r for f, r in zip(faults, result["faults"])]
+                errors = [e or err for e, err in zip(errors, result["errors"])]
+                if index == 0:
+                    replay_result = result
+        except SandboxDown as exc:
+            raise RuntimeError(f"Sandbox is not ready: {exc}") from exc
+        scores = [
+            {"name": bot.name, "points": round(p / played, 4), "faults": f, "error": e}
+            for bot, p, f, e in zip(bots, points, faults, errors)
+        ]
+        replay_id = save_replay(
+            "Practice · " + bots[0].name, replay_result, "practice",
+            job["owner_id"], job["team_id"], game_id=game_id,
+        )
+        return {"scores": scores, "replay_id": replay_id, "hands": played,
+                "matches": played, "game": game_id}
+    finally:
+        if sandbox_bot:
+            sandbox_bot.close()
+
+
 def smoke_bot(bot):
-    """Require at least one legal decision, even if a short table ends before its seat acts."""
-    observation = {'hand': 1, 'street': 'preflop', 'seat': 0, 'button': 1,
-                   'hole_cards': ['As', 'Kd'], 'board': [], 'pot': 30,
-                   'stack': 2000, 'to_call': 20, 'min_raise': 40, 'max_raise': 2000,
-                   'legal_actions': ['fold', 'call', 'raise'],
-                   'players': [{'seat': 0, 'stack': 2000, 'bet': 0, 'folded': False},
-                               {'seat': 1, 'stack': 1980, 'bet': 20, 'folded': False}],
-                   'history': []}
-    bot.reset()
-    action = bot.act(observation)
-    if action.get('action') not in observation['legal_actions']:
-        raise ValueError('Sandbox smoke test returned an illegal action.')
-    if action['action'] == 'raise' and (type(action.get('amount')) is not int or
-                                        not 40 <= action['amount'] <= 2000):
-        raise ValueError('Sandbox smoke test returned an illegal raise.')
+    """Poker smoke: require at least one legal decision via the game adapter."""
+    from .games import get_game
+
+    get_game("poker").adapter.smoke(bot)
 
 
-def has_newer_submission(c, team_id, queued_at):
+def has_newer_submission(c, team_id, queued_at, game_id, track):
     # Finished GitHub jobs create their submission record after validation;
     # compare request times, not completion times, to handle out-of-order jobs.
     newer_job = c.execute("""SELECT 1 FROM jobs WHERE team_id=? AND kind IN
-        ('github_validation','model_validation') AND created_at>? LIMIT 1""",
-                          (team_id, queued_at)).fetchone()
+        ('github_validation','model_validation') AND created_at>?
+        AND COALESCE(json_extract(payload, '$.game_id'), 'poker')=?
+        AND CASE WHEN kind='model_validation' THEN 'model'
+                 ELSE COALESCE(json_extract(payload, '$.track'), 'classic') END=? LIMIT 1""",
+                          (team_id, queued_at, game_id, track)).fetchone()
     newer_manual = c.execute("""SELECT 1 FROM submissions s LEFT JOIN github_submissions g
         ON g.submission_id=s.id WHERE s.team_id=? AND s.created_at>?
-        AND g.submission_id IS NULL LIMIT 1""", (team_id, queued_at)).fetchone()
+        AND g.submission_id IS NULL AND s.game_id=? AND
+        CASE WHEN EXISTS(SELECT 1 FROM model_submissions m WHERE m.submission_id=s.id)
+             THEN 'model' ELSE 'classic' END=? LIMIT 1""",
+                             (team_id, queued_at, game_id, track)).fetchone()
     return bool(newer_job or newer_manual)
 
 
@@ -199,27 +313,40 @@ def validate_github_submission(job):
     path = db.DATA / 'bots' / (submission_id + ('.zip' if is_model else '.py'))
     path.write_bytes(raw)
     bot_class = ModelContainerBot if is_model else ContainerBot
-    bot = bot_class(path, payload['full_name'], decision_ms=50.0 if is_model else 1.0)
+    game_id = payload.get('game_id', 'poker')
+    from .games import get_game
+
+    protocol = 'poker' if game_id == 'poker' else get_game(game_id).adapter.protocol
+    bot = bot_class(path, payload['full_name'], decision_ms=50.0 if is_model else 1.0, protocol=protocol)
     try:
-        smoke_bot(bot)
-        bots = make_baselines(8)
-        bots[0] = bot
-        result = play_table(bots, seed=1729, max_hands=1, capture=False)
-        if result['faults'][0]:
-            raise ValueError('Sandbox smoke test failed: ' + str(result['errors'][0] or 'bot fault'))
+        if game_id == 'poker':
+            smoke_bot(bot)
+            bots = make_baselines(8)
+            bots[0] = bot
+            result = play_table(bots, seed=1729, max_hands=1, capture=False)
+            if result['faults'][0]:
+                raise ValueError('Sandbox smoke test failed: ' + str(result['errors'][0] or 'bot fault'))
+        else:
+            adapter = get_game(game_id).adapter
+            adapter.smoke(bot)
+            adapter.validation_match(bot)
         with db.connect(True) as c:
             assert_lease(c, job)
             connection = c.execute('SELECT * FROM github_repositories WHERE id=? AND team_id=?',
                                    (payload['connection_id'], payload['team_id'])).fetchone()
             if not connection:
                 raise ValueError('Repository was disconnected during validation.')
-            newer = has_newer_submission(c, payload['team_id'], job['created_at'])
+            newer = has_newer_submission(c, payload['team_id'], job['created_at'], game_id,
+                                         'model' if is_model else 'classic')
             active = connection['latest_job_id'] == job['id'] and not newer
             if active:
-                c.execute('UPDATE submissions SET active=0 WHERE team_id=?', (payload['team_id'],))
-            c.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?,?)',
+                deactivate_active(c, payload['team_id'], game_id,
+                                  'model' if is_model else 'classic')
+            c.execute('''INSERT INTO submissions(id,team_id,name,source,sha256,created_at,status,
+                         error,active,game_id,rules_version) VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
                       (submission_id, payload['team_id'], payload['full_name'], source,
-                       hashlib.sha256(raw).hexdigest(), time.time(), 'accepted', None, int(active)))
+                       hashlib.sha256(raw).hexdigest(), time.time(), 'accepted', None, int(active),
+                       game_id, 1))
             if is_model:
                 c.execute('INSERT INTO model_submissions VALUES(?,?,?)',
                           (submission_id, hashlib.sha256(raw).hexdigest(), len(raw)))
@@ -241,19 +368,34 @@ def validate_model_submission(job):
         submission = c.execute('SELECT * FROM submissions WHERE id=? AND status=?', (sid, 'validating')).fetchone()
     if not submission:
         raise ValueError('Model submission is no longer awaiting validation.')
-    bot = ModelContainerBot(db.DATA / 'bots' / (sid + '.zip'), submission['name'], decision_ms=50.0)
+    game_id = submission['game_id'] or 'poker'
+    protocol = 'poker'
+    if game_id != 'poker':
+        from .games import get_game
+
+        protocol = get_game(game_id).adapter.protocol
+    bot = ModelContainerBot(db.DATA / 'bots' / (sid + '.zip'), submission['name'],
+                            decision_ms=50.0, protocol=protocol)
+    game_id = submission['game_id'] or 'poker'
     try:
-        smoke_bot(bot)
-        bots = make_baselines(8)
-        bots[0] = bot
-        result = play_table(bots, seed=1729, max_hands=1, capture=False)
-        if result['faults'][0]:
-            raise ValueError('Sandbox smoke test failed: ' + str(result['errors'][0] or 'bot fault'))
+        if game_id == 'poker':
+            smoke_bot(bot)
+            bots = make_baselines(8)
+            bots[0] = bot
+            result = play_table(bots, seed=1729, max_hands=1, capture=False)
+            if result['faults'][0]:
+                raise ValueError('Sandbox smoke test failed: ' + str(result['errors'][0] or 'bot fault'))
+        else:
+            from .games import get_game
+
+            adapter = get_game(game_id).adapter
+            adapter.smoke(bot)
+            adapter.validation_match(bot)
         with db.connect(True) as c:
             assert_lease(c, job)
-            newer = has_newer_submission(c, submission['team_id'], job['created_at'])
+            newer = has_newer_submission(c, submission['team_id'], job['created_at'], game_id, 'model')
             if not newer:
-                c.execute('UPDATE submissions SET active=0 WHERE team_id=?', (submission['team_id'],))
+                deactivate_active(c, submission['team_id'], game_id, 'model')
             c.execute("UPDATE submissions SET status='accepted',active=? WHERE id=?",
                       (int(not newer), sid))
         return {'submission_id': sid, 'active': not bool(newer)}
@@ -270,6 +412,8 @@ def validate_model_submission(job):
 
 def score_round(job):
     payload = db.json_value(job["payload"])
+    if (payload.get("game_id") or "poker") != "poker":
+        return _score_round_game(job, payload)
     event, teams = payload["event"], payload["teams"]
     # Preflight: a disrupted round is retried, never scored with dead sandboxes.
     status = sandbox_status()
@@ -280,6 +424,7 @@ def score_round(job):
     totals = {t["id"]: {"points": 0.0, "points_sq": 0.0, "tables": 0, "faults": 0} for t in teams}
     rng = random.Random(payload["seed"])
     replay_ids = []
+    replay_results = []
     table_index = 0
     with db.connect(True) as c:
         assert_lease(c, job)
@@ -319,11 +464,18 @@ def score_round(job):
                     bot.close()
             with db.connect(True) as c:
                 assert_lease(c, job)
+                hand_log_id = ident()
                 c.execute(
                     "INSERT INTO hand_logs VALUES(?,?,?,?,?,?)",
-                    (ident(), payload["round_id"], table_index, table_seed, time.time(),
+                    (hand_log_id, payload["round_id"], table_index, table_seed, time.time(),
                      json.dumps(result["log"])),
                 )
+                c.execute('INSERT INTO hand_log_metadata VALUES(?,?,?)',
+                          (hand_log_id, job['id'], json.dumps([
+                              {'seat': index, 'team_id': team['id'], 'submission_id': team['submission_id'],
+                               'scoring': scoring}
+                              for index, (team, scoring) in enumerate(seats)
+                          ])))
             table_index += 1
             for index, (team, scoring) in enumerate(seats):
                 if scoring:
@@ -333,9 +485,9 @@ def score_round(job):
                     total["tables"] += 1
                     total["faults"] += result["faults"][index]
             if result["frames"]:
-                replay_ids.append(
-                    save_replay(f"{event['title']} · Round {payload['number']}", result, "tournament")
-                )
+                # Completed replays reveal every seat's cards. Do not publish
+                # them until the entire round and its scores commit together.
+                replay_results.append(result)
         with db.connect(True) as c:
             assert_lease(c, job)
             c.execute(
@@ -344,6 +496,9 @@ def score_round(job):
             )
     with db.connect(True) as c:
         assert_lease(c, job)
+        for result in replay_results:
+            replay_ids.append(insert_replay(c, f"{event['title']} · Round {payload['number']}",
+                                            result, "tournament"))
         for team in teams:
             total = totals[team["id"]]
             c.execute(
@@ -379,7 +534,175 @@ def score_round(job):
         )
         if payload["number"] == event["round_count"]:
             c.execute("UPDATE events SET status='completed' WHERE id=?", (event["id"],))
-    return {"round_id": payload["round_id"], "replay_ids": replay_ids, "teams_scored": len(teams)}
+        result = {"round_id": payload["round_id"], "replay_ids": replay_ids, "teams_scored": len(teams)}
+        if job.get('lease_owner'):
+            # A crash after scores commit must never cause the lease reaper to
+            # report this completed round as failed. Publish its job atomically.
+            updated = c.execute("""UPDATE jobs SET status='completed',progress=100,result=?
+                WHERE id=? AND status='running' AND lease_owner=? AND lease_until>?""",
+                (json.dumps(result), job['id'], job['lease_owner'], time.time())).rowcount
+            if not updated:
+                raise RuntimeError('Worker lease expired; round was not published.')
+    return result
+
+
+def _score_round_game(job, payload):
+    """Scored rounds for non-poker games (Bluff v1): four seats, baseline fill.
+
+    Entrants take one scoring seat per match; unfilled seats are labelled
+    unscored baselines. Seats are re-shuffled per table from the round seed,
+    so rotation differs across rounds without giving one entrant two scored
+    seats in the same match. Scoring v1: win = 1, loss = 0, cap ties share.
+    """
+    from .games import get_game
+
+    event, teams = payload["event"], payload["teams"]
+    game_id = payload["game_id"]
+    spec = get_game(game_id, payload.get("rules_version"))
+    adapter = spec.adapter
+    seats = spec.seats[0]
+    # Preflight: a disrupted round is retried, never scored with dead sandboxes.
+    status = sandbox_status()
+    if not status["available"] or not status["image"]:
+        raise RuntimeError(
+            f"Sandbox is not ready ({status['error']}). The round was not scored and can be retried."
+        )
+    totals = {t["id"]: {"points": 0.0, "points_sq": 0.0, "tables": 0, "faults": 0} for t in teams}
+    rng = random.Random(payload["seed"])
+    replay_ids = []
+    replay_results = []
+    table_index = 0
+    with db.connect(True) as c:
+        assert_lease(c, job)
+        c.execute("UPDATE rounds SET status='running' WHERE id=?", (payload["round_id"],))
+    for iteration in range(event["tables_per_round"]):
+        if _stop.is_set():
+            raise RuntimeError("The worker stopped; the operator can retry this round.")
+        order = teams[:]
+        rng.shuffle(order)
+        for offset in range(0, len(order), seats):
+            primary = order[offset:offset + seats]
+            seat_plan = [(t, True) for t in primary]
+            while len(seat_plan) < seats:
+                seat_plan.append((None, False))  # unscored baseline filler
+            rng.shuffle(seat_plan)
+            table_seed = rng.getrandbits(52)
+            fillers = adapter.make_baselines(seats - len(primary), seed=table_seed)
+            fillers = iter(fillers)
+            bot_class = ModelContainerBot if payload.get('track') == 'model' else ContainerBot
+            extension = '.zip' if payload.get('track') == 'model' else '.py'
+            bots = []
+            seating = []
+            for team, scoring in seat_plan:
+                if team is not None:
+                    bots.append(bot_class(
+                        db.DATA / "bots" / (team["submission_id"] + extension),
+                        team["name"], event["decision_ms"],
+                        image=event.get("sandbox_digest"),
+                        protocol=adapter.protocol,
+                    ))
+                else:
+                    bots.append(next(fillers))
+                seating.append({
+                    "seat": len(bots) - 1,
+                    "team_id": team["id"] if team else None,
+                    "submission_id": team["submission_id"] if team else None,
+                    "scoring": scoring,
+                })
+            try:
+                result = adapter.run_match(
+                    bots, table_seed,
+                    {"decision_cap": event.get("decision_cap")},
+                    capture=iteration == 0 and offset == 0,
+                )
+            finally:
+                for bot in bots:
+                    close = getattr(bot, "close", None)
+                    if close:
+                        close()
+            with db.connect(True) as c:
+                assert_lease(c, job)
+                hand_log_id = ident()
+                c.execute(
+                    "INSERT INTO hand_logs VALUES(?,?,?,?,?,?)",
+                    (hand_log_id, payload["round_id"], table_index, table_seed,
+                     time.time(), json.dumps(result["log"])),
+                )
+                c.execute('INSERT INTO hand_log_metadata VALUES(?,?,?)',
+                          (hand_log_id, job['id'], json.dumps(seating)))
+            table_index += 1
+            for index, (team, scoring) in enumerate(seat_plan):
+                if scoring and team is not None:
+                    total = totals[team["id"]]
+                    total["points"] += result["points"][index]
+                    total["points_sq"] += result["points"][index] ** 2
+                    total["tables"] += 1
+                    total["faults"] += result["faults"][index]
+            if result["frames"]:
+                # Completed replays may reveal challenged batches; publish only
+                # after the whole round and its scores commit together.
+                replay_results.append(result)
+        with db.connect(True) as c:
+            assert_lease(c, job)
+            c.execute(
+                "UPDATE jobs SET progress=? WHERE id=?",
+                (int((iteration + 1) / event["tables_per_round"] * 95), job["id"]),
+            )
+    with db.connect(True) as c:
+        assert_lease(c, job)
+        for result in replay_results:
+            replay_ids.append(insert_replay(
+                c, f"{event['title']} · Round {payload['number']}",
+                result, "tournament", game_id=game_id,
+            ))
+        for team in teams:
+            total = totals[team["id"]]
+            c.execute(
+                """INSERT INTO round_scores(round_id,team_id,team_name,college,score,
+                   faults,submission_id,is_baseline) VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    payload["round_id"],
+                    team["id"],
+                    team["name"],
+                    team["college"],
+                    total["points"] / total["tables"],
+                    total["faults"],
+                    team["submission_id"],
+                    0,
+                ),
+            )
+            n = total['tables']
+            sample_variance = max(0.0, (total['points_sq'] - total['points'] ** 2 / n) / (n - 1)) if n > 1 else None
+            stderr = math.sqrt(sample_variance / n) if sample_variance is not None else None
+            c.execute('INSERT INTO round_metrics VALUES(?,?,?,?)',
+                      (payload["round_id"], team['id'], n, stderr))
+            db.append_score_event(
+                c, "round-score", payload["round_id"], team["id"],
+                {
+                    "game_id": game_id,
+                    "score": total["points"] / total["tables"],
+                    "faults": total["faults"],
+                    "matches": n,
+                    "submission_id": team["submission_id"],
+                    "round_number": payload["number"],
+                    "event_id": event["id"],
+                },
+            )
+        c.execute(
+            "UPDATE rounds SET status='completed',finished_at=? WHERE id=?",
+            (time.time(), payload["round_id"]),
+        )
+        if payload["number"] == event["round_count"]:
+            c.execute("UPDATE events SET status='completed' WHERE id=?", (event["id"],))
+        result = {"round_id": payload["round_id"], "replay_ids": replay_ids, "teams_scored": len(teams)}
+        if job.get('lease_owner'):
+            # Publish the completed round atomically with its lease check.
+            updated = c.execute("""UPDATE jobs SET status='completed',progress=100,result=?
+                WHERE id=? AND status='running' AND lease_owner=? AND lease_until>?""",
+                (json.dumps(result), job['id'], job['lease_owner'], time.time())).rowcount
+            if not updated:
+                raise RuntimeError('Worker lease expired; round was not published.')
+    return result
 
 
 def seed_exhibition():
@@ -405,13 +728,17 @@ def seed_exhibition():
         # Another process may have completed the same work while we computed.
         if c.execute("SELECT 1 FROM events WHERE id='baseline-exhibition'").fetchone():
             return
-        c.execute('INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (
+        c.execute('''INSERT INTO events(id,title,description,status,variant,build_starts_at,
+            build_ends_at,round_interval_seconds,round_count,tables_per_round,max_hands,
+            decision_ms,sponsor_name,exhibition,sandbox_digest,game_id,rules_version)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
             'baseline-exhibition', 'The opening table', 'Completed exhibition between eight built-in baseline strategies. These are reference bots, not student competitors.',
-            'completed', 'No-limit Texas Hold’em', now - 7200, now - 3600, 1200, 6, 2, 12, 1.0, None, 1, None))
+            'completed', 'No-limit Texas Hold’em', now - 7200, now - 3600, 1200, 6, 2, 12, 1.0, None, 1, None, 'poker', 1))
         if replay is not None:
-            c.execute('INSERT INTO replays VALUES(?,?,?,?,?,?,?,?,?)', (
+            c.execute('''INSERT INTO replays(id,title,created_at,hand_count,source,owner_id,
+                team_id,frames,summary,game_id) VALUES(?,?,?,?,?,?,?,?,?,?)''', (
                 ident(), 'The opening table · Baseline exhibition', now, replay['hands'], 'exhibition', None, None,
-                json.dumps(replay['frames']), json.dumps({k: v for k, v in replay.items() if k != 'frames'})))
+                json.dumps(replay['frames']), json.dumps({k: v for k, v in replay.items() if k != 'frames'}), 'poker'))
         for number, names, totals, faults in rounds:
             round_id = 'exhibition-' + str(number)
             c.execute('INSERT INTO rounds VALUES(?,?,?,?,?,?,?)', (round_id, 'baseline-exhibition', number, 'completed', now - 3600 + number * 60, now - 3600 + number * 60 + 1, 8))
@@ -511,32 +838,38 @@ def execute_loop(index: int):
             _stop.wait(2)
 
 
+def coordinate_events_once():
+    """Advance time-based event states and enqueue due rounds once."""
+    with db.connect(True) as c:
+        now = time.time()
+        c.execute(
+            "UPDATE events SET status='building' WHERE status='registration' AND build_starts_at<=?",
+            (now,),
+        )
+        due = c.execute(
+            """SELECT e.id FROM events e WHERE e.status IN ('building','running')
+               AND e.build_ends_at<=? AND EXISTS (SELECT 1 FROM entries x WHERE x.event_id=e.id)""",
+            (now,),
+        ).fetchall()
+    for event in due:
+        with db.connect() as c:
+            failed = c.execute(
+                "SELECT 1 FROM rounds WHERE event_id=? AND status='failed'", (event["id"],)
+            ).fetchone()
+        if not failed:
+            try:
+                enqueue_round(event["id"])
+            except ValueError:
+                pass
+
+
 def coordinator():
     """Scheduling only: event transitions and due-round enqueueing."""
     tick = 0
     while not _stop.is_set():
         try:
             if tick % 20 == 0:
-                with db.connect(True) as c:
-                    now = time.time()
-                    c.execute(
-                        "UPDATE events SET status='building' WHERE status='registration' AND build_starts_at<=?",
-                        (now,),
-                    )
-                    due = c.execute(
-                        "SELECT id FROM events WHERE status IN ('building','running') AND build_ends_at<=?",
-                        (now,),
-                    ).fetchall()
-                for event in due:
-                    with db.connect() as c:
-                        failed = c.execute(
-                            "SELECT 1 FROM rounds WHERE event_id=? AND status='failed'", (event["id"],)
-                        ).fetchone()
-                    if not failed:
-                        try:
-                            enqueue_round(event["id"])
-                        except ValueError:
-                            pass
+                coordinate_events_once()
             tick += 1
             _stop.wait(0.5)
         except Exception:
@@ -577,7 +910,7 @@ def main():
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
     )
-    parser = argparse.ArgumentParser(description="Campus Arena job worker")
+    parser = argparse.ArgumentParser(description="Stack Theory job worker")
     parser.add_argument("--workers", type=int, default=None, help="execution slots (default ARENA_WORKERS or 1)")
     parser.add_argument("--once", action="store_true", help="run a single claim+execute cycle and exit")
     args = parser.parse_args()

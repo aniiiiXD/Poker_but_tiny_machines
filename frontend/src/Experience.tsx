@@ -4,12 +4,17 @@ import { A, fmtDay, Status } from "./ui";
 import { Replay } from "./Replay";
 import { EquityPanel } from "./EquityPanel";
 
+function acceptingEntries(event: Data) {
+  return !event.exhibition && ["registration", "building"].includes(event.status) &&
+    new Date(event.build_ends_at).getTime() > Date.now();
+}
+
 function StatStrip() {
   const events = useData("/events");
   const replays = useData("/replays");
   const board = useData("/leaderboard");
   const live = (events.data?.events ?? []).filter(
-    (e: Data) => !e.exhibition && e.status !== "completed",
+    acceptingEntries,
   );
   const teams = (events.data?.events ?? [])
     .filter((e: Data) => !e.exhibition)
@@ -152,7 +157,7 @@ function HowItWorks({ starter }: { starter: Data | null }) {
 
 function EventRows() {
   const { data, error } = useData("/events");
-  const events = (data?.events ?? []).filter((e: Data) => !e.exhibition);
+  const events = (data?.events ?? []).filter(acceptingEntries);
   return (
     <section className="section" aria-labelledby="events-title">
       <div className="wrap">
@@ -184,7 +189,7 @@ function EventRows() {
                     <span className="arrow">↗</span>
                   </h3>
                 </span>
-                <Status text={e.status} done={e.status === "completed"} />
+                <Status text={e.status} done={["completed", "closed"].includes(e.status)} />
                 <span className="meta">
                   {fmtDay(e.build_starts_at)} · {e.entry_count} teams
                 </span>

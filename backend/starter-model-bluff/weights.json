@@ -1,0 +1,8 @@
+{
+  "bias": -3.2,
+  "claim_weight": 0.55,
+  "own_weight": 0.9,
+  "revealed_weight": 0.8,
+  "challenge_threshold": 0.0,
+  "max_truthful": 2
+}

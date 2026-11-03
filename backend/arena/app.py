@@ -19,7 +19,8 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from . import db, mailer, worker
-from .sandbox import sandbox_status, image_id
+from .games import GameError, get_game, list_games
+from .sandbox import MODEL_IMAGE, sandbox_status, image_id
 from .security import (
     COOKIE,
     current_user,
@@ -64,7 +65,7 @@ async def lifespan(app):
         worker.stop()
 
 
-app = FastAPI(title="Campus Arena", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Stack Theory", version="0.1.0", lifespan=lifespan)
 from .github_integration import router as github_router
 app.include_router(github_router)
 from .model_projects import router as model_router
@@ -133,11 +134,14 @@ class TeamJoin(BaseModel):
 class Submission(BaseModel):
     name: str = Field(min_length=2, max_length=60)
     source: str = Field(min_length=20, max_length=102400)
+    game: str = Field(default="poker", max_length=20)
 
 
 class Practice(BaseModel):
     submission_id: str | None = Field(default=None, max_length=64)
     hands: int = Field(default=20, ge=1, le=30)
+    game: str = Field(default="poker", max_length=20)
+    matches: int = Field(default=1, ge=1, le=8)
 
 
 class SponsorInquiry(BaseModel):
@@ -182,6 +186,7 @@ class EventCreate(BaseModel):
     decision_ms: float = Field(default=1, ge=0.1, le=100)
     sponsor_name: str | None = Field(default=None, max_length=100)
     track: str = Field(default='classic', pattern=r'^(classic|model)$')
+    game: str = Field(default='poker', max_length=20)
 
 
 def client_key(request):
@@ -209,6 +214,12 @@ def set_cookie(response, token):
     )
 
 
+@app.get("/api/games")
+def games():
+    """Only implemented games, with their supported rules versions and tracks."""
+    return {"games": list_games()}
+
+
 @app.get("/api/health")
 def health():
     status = sandbox_status()
@@ -216,6 +227,7 @@ def health():
         "status": "ok",
         "sandbox_available": status.get("available", status.get("sandbox_available", False)),
         "sandbox_image": status.get("image", status.get("sandbox_image", False)),
+        "model_sandbox_image": bool(image_id(MODEL_IMAGE)) if status.get('available') else False,
     }
 
 
@@ -408,6 +420,8 @@ def join_team(body: TeamJoin, request: Request):
 
 def event_info(row, user=None):
     event = dict(row)
+    event["game"] = event.get("game_id", "poker")
+    event["rules_version"] = event.get("rules_version", 1)
     with db.connect() as c:
         track_row = c.execute('SELECT track FROM event_tracks WHERE event_id=?', (row['id'],)).fetchone()
         event['track'] = track_row['track'] if track_row else 'classic'
@@ -423,20 +437,39 @@ def event_info(row, user=None):
                 "SELECT 1 FROM entries WHERE event_id=? AND team_id=?", (event["id"], user["team_id"])
             ).fetchone()
         )
+        # Project a truthful closed status without rewriting historic records.
+        if (not event['exhibition'] and event['status'] in ('registration', 'building')
+                and event['build_ends_at'] <= time.time() and event['entry_count'] == 0
+                and not c.execute('SELECT 1 FROM rounds WHERE event_id=? LIMIT 1', (event['id'],)).fetchone()):
+            event['status'] = 'closed'
+            event['status_reason'] = 'No teams entered before registration closed.'
     event["exhibition"] = bool(event["exhibition"])
     event["build_starts_at"] = iso(event["build_starts_at"])
     event["build_ends_at"] = iso(event["build_ends_at"])
     return event
 
 
-def leaderboard(event_id=None):
+def leaderboard(event_id=None, game=None):
+    """Cross-event totals. Without an explicit game, only poker rounds count —
+    game scores are never summed across different games."""
     with db.connect() as c:
+        filter_sql, params = "", []
+        if event_id:
+            filter_sql = "AND r.event_id=? "
+            params = [event_id]
+        elif game:
+            filter_sql = "AND e.game_id=? "
+            params = [game]
+        else:
+            filter_sql = "AND e.game_id='poker' "
         rows = c.execute(
-            """SELECT rs.*,r.number,r.event_id FROM round_scores rs JOIN rounds r ON r.id=rs.round_id
+            """SELECT rs.*,r.number,r.event_id,e.game_id,rm.tables_played FROM round_scores rs JOIN rounds r ON r.id=rs.round_id
+            JOIN events e ON e.id=r.event_id
+            LEFT JOIN round_metrics rm ON rm.round_id=rs.round_id AND rm.team_id=rs.team_id
             WHERE r.status='completed' """
-            + ("AND r.event_id=? " if event_id else "")
+            + filter_sql
             + "ORDER BY r.event_id,r.number",
-            (event_id,) if event_id else (),
+            params,
         ).fetchall()
     totals = {}
     for r in rows:
@@ -450,12 +483,22 @@ def leaderboard(event_id=None):
                 "is_baseline": bool(r["is_baseline"]),
                 "_events": set(),
                 "faults": 0,
+                "_matches": 0,
             }
         score = totals[r["team_id"]]
-        score["total_score"] += r["score"] * r["number"]
+        if r["game_id"] == "bluff":
+            matches = r["tables_played"] or 1
+            score["total_score"] += r["score"] * matches
+            score["_matches"] += matches
+        else:
+            score["total_score"] += r["score"] * r["number"]
         score["round_scores"][r["number"] - 1] += r["score"]
         score["faults"] += r["faults"]
         score["_events"].add(r["event_id"])
+    for score in totals.values():
+        matches = score.pop("_matches")
+        if matches:
+            score["total_score"] /= matches
     ordered = sorted(totals.values(), key=lambda t: (-t["total_score"], t["team_name"]))
     previous, rank = None, 0
     for index, t in enumerate(ordered):
@@ -496,26 +539,16 @@ def event_detail(event_id: str, request: Request):
     for r in rounds:
         r["starts_at"], r["finished_at"] = iso(r["starts_at"]), iso(r["finished_at"])
     event = event_info(row, current_user(request))
+    try:
+        spec = get_game(event.get("game_id", "poker"), event.get("rules_version", 1))
+    except GameError as exc:
+        raise HTTPException(422, str(exc)) from None
     return {
         "event": event,
         "rounds": rounds,
         "leaderboard": leaderboard(event_id),
         "entries": entries,
-        "rules": {
-            "language": "Python 3.12 / standard library",
-            "source_limit_bytes": 102400,
-            "project_limit_bytes": 16777216 if event['track'] == 'model' else None,
-            "track": event['track'],
-            "network_access": False,
-            "decision_ms": row["decision_ms"],
-            "submission_cooldown_seconds": COOLDOWN,
-            "initial_chips": 2000,
-            "blinds": "10/20, doubling every 25 hands",
-            "payouts": [8, 5, 3, 2, 1, 0, 0, 0],
-            "scoring": "Mean points per table; round weights 1 through 6. ICM at hand cap. Non-scoring copies fill empty seats.",
-            "tie_policy": "Equal scores share a rank. No cash prizes are configured for the local pilot.",
-            "sandbox_digest": row["sandbox_digest"],
-        },
+        "rules": spec.adapter.rules_block(row, event['track'], COOLDOWN),
     }
 
 
@@ -557,25 +590,38 @@ def event_metrics(event_id: str):
 
 
 @app.get("/api/starter")
-def starter():
+def starter(game: str = "poker"):
+    try:
+        spec = get_game(game)
+    except GameError as exc:
+        raise HTTPException(422, str(exc)) from None
+    adapter = spec.adapter
+    directory = ROOT / adapter.starter_dir
     return {
-        "source": (ROOT / "starter-kit/agent.py").read_text(),
-        "interface": "class Agent:\n    def act(self, observation: dict) -> dict: ...",
-        "guide": (ROOT / "starter-kit/README.md").read_text(),
+        "game": spec.game_id,
+        "rules_version": spec.rules_version,
+        "source": (directory / "agent.py").read_text(),
+        "interface": adapter.interface,
+        "guide": (directory / "README.md").read_text(),
     }
 
 
 @app.get("/api/starter/download")
-def starter_download():
+def starter_download(game: str = "poker"):
+    try:
+        spec = get_game(game)
+    except GameError as exc:
+        raise HTTPException(422, str(exc)) from None
+    adapter = spec.adapter
     data = io.BytesIO()
     with zipfile.ZipFile(data, "w", zipfile.ZIP_DEFLATED) as bundle:
-        for name in ("agent.py", "simulate.py", "icm.py", "README.md"):
-            bundle.write(ROOT / "starter-kit" / name, name)
+        for name in adapter.starter_files:
+            bundle.write(ROOT / adapter.starter_dir / name, name)
     data.seek(0)
     return StreamingResponse(
         data,
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="campus-arena-starter.zip"'},
+        headers={"Content-Disposition": f'attachment; filename="stack-theory-{spec.game_id}-starter.zip"'},
     )
 
 
@@ -583,6 +629,8 @@ def submission_info(row):
     value = dict(row)
     value["created_at"] = iso(value["created_at"])
     value["active"] = bool(value["active"])
+    value["game"] = value.get("game_id", "poker")
+    value["rules_version"] = value.get("rules_version", 1)
     return value
 
 
@@ -621,6 +669,10 @@ def submit(body: Submission, request: Request):
     if len(source.encode("utf-8")) > 102400:
         raise HTTPException(413, "Python source must be at most 100 KiB.")
     try:
+        spec = get_game(body.game)
+    except GameError as exc:
+        raise HTTPException(422, str(exc)) from None
+    try:
         tree = ast.parse(source)
         cls = next(
             (node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Agent"), None
@@ -646,9 +698,13 @@ def submit(body: Submission, request: Request):
                 headers={"Retry-After": str(remaining)},
             )
         path.write_text(source, encoding="utf-8")
-        c.execute("UPDATE submissions SET active=0 WHERE team_id=?", (user["team_id"],))
+        # Manual single-file submissions are always the classic track, and
+        # activation is scoped per game: activating a Bluff bot never
+        # deactivates this team's Poker bot.
+        worker.deactivate_active(c, user["team_id"], spec.game_id, "classic")
         c.execute(
-            "INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?,?)",
+            """INSERT INTO submissions(id,team_id,name,source,sha256,created_at,status,
+               error,active,game_id,rules_version) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 sid,
                 user["team_id"],
@@ -659,6 +715,8 @@ def submit(body: Submission, request: Request):
                 "accepted",
                 None,
                 1,
+                spec.game_id,
+                spec.rules_version,
             ),
         )
         result = c.execute("SELECT * FROM submissions WHERE id=?", (sid,)).fetchone()
@@ -668,12 +726,20 @@ def submit(body: Submission, request: Request):
 @app.post("/api/practice", status_code=202)
 def practice(body: Practice, request: Request):
     user = current_user(request)
+    try:
+        spec = get_game(body.game)
+    except GameError as exc:
+        raise HTTPException(422, str(exc)) from None
     if body.submission_id:
         user = require_team(request)
         with db.connect() as c:
             found = c.execute(
-                "SELECT 1 FROM submissions WHERE id=? AND team_id=? AND status='accepted'", (body.submission_id, user["team_id"])
+                """SELECT 1 FROM submissions WHERE id=? AND team_id=? AND status='accepted'
+                   AND game_id=? AND rules_version=?""",
+                (body.submission_id, user["team_id"], spec.game_id, spec.rules_version),
             ).fetchone()
+            is_model = c.execute('SELECT 1 FROM model_submissions WHERE submission_id=?',
+                                 (body.submission_id,)).fetchone()
         if not found:
             raise HTTPException(404, "Submission not found for your team.")
         status = health()
@@ -682,6 +748,8 @@ def practice(body: Practice, request: Request):
                 503,
                 "The bot sandbox is not ready. Start Docker and build the sandbox image, or try the baseline demo.",
             )
+        if is_model and not status['model_sandbox_image']:
+            raise HTTPException(503, 'The model sandbox image is not built. Run make sandbox.')
     rate_limit("practice:" + (user["id"] if user else client_key(request)), 20, 3600)
     job_id = worker.ident()
     with db.connect(True) as c:
@@ -694,7 +762,9 @@ def practice(body: Practice, request: Request):
             ).fetchone()
         ):
             raise HTTPException(409, "Your current practice run is still in progress.")
-        payload = {"submission_id": body.submission_id, "hands": body.hands, "seed": secrets.randbits(52)}
+        payload = {"submission_id": body.submission_id, "hands": body.hands,
+                   "game_id": spec.game_id, "rules_version": spec.rules_version,
+                   "matches": body.matches, "seed": secrets.randbits(52)}
         c.execute(
             "INSERT INTO jobs(id,kind,status,team_id,owner_id,created_at,payload) VALUES(?,?,?,?,?,?,?)",
             (
@@ -738,11 +808,11 @@ def replays(request: Request):
     user = current_user(request)
     with db.connect() as c:
         rows = c.execute(
-            """SELECT id,title,created_at,hand_count,source FROM replays
+            """SELECT id,title,created_at,hand_count,source,game_id FROM replays
           WHERE owner_id IS NULL OR owner_id=? OR (team_id IS NOT NULL AND team_id=?) ORDER BY created_at DESC LIMIT 100""",
             (user["id"] if user else "", user["team_id"] if user else ""),
         ).fetchall()
-    return {"replays": [{**dict(r), "created_at": iso(r["created_at"])} for r in rows]}
+    return {"replays": [{**dict(r), "game": r["game_id"], "created_at": iso(r["created_at"])} for r in rows]}
 
 
 @app.get("/api/replays/{replay_id}")
@@ -761,14 +831,19 @@ def replay_detail(replay_id: str, request: Request):
     return {
         "id": row["id"],
         "title": row["title"],
+        "game": row["game_id"],
         "frames": db.json_value(row["frames"]),
-        "summary": db.json_value(row["summary"]),
+        "summary": worker.public_replay_summary(db.json_value(row["summary"]), row["game_id"]),
     }
 
 
 @app.get("/api/leaderboard")
-def global_leaderboard():
-    return {"leaderboard": leaderboard()}
+def global_leaderboard(game: str = "poker"):
+    try:
+        spec = get_game(game)
+    except GameError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"leaderboard": leaderboard(game=spec.game_id), "game": spec.game_id}
 
 
 @app.get("/api/profile")
@@ -815,17 +890,26 @@ def inquiry(body: SponsorInquiry, request: Request):
 @app.post("/api/admin/events", status_code=201)
 def create_event(body: EventCreate, request: Request):
     require_admin(request)
+    try:
+        spec = get_game(body.game)
+    except GameError as exc:
+        raise HTTPException(422, str(exc)) from None
     event_id = worker.ident()
-    digest = image_id()
+    digest = image_id(MODEL_IMAGE) if body.track == 'model' else image_id()
+    if body.track == 'model' and not digest:
+        raise HTTPException(503, 'Build the model sandbox image before creating a model event.')
     with db.connect(True) as c:
         c.execute(
-            "INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            """INSERT INTO events(id,title,description,status,variant,build_starts_at,
+               build_ends_at,round_interval_seconds,round_count,tables_per_round,max_hands,
+               decision_ms,sponsor_name,exhibition,sandbox_digest,game_id,rules_version)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 event_id,
                 body.title,
                 body.description,
                 "registration",
-                "No-limit Texas Hold’em",
+                spec.variant_label,
                 body.build_starts_at,
                 body.build_starts_at + body.build_minutes * 60,
                 body.round_interval_seconds,
@@ -836,10 +920,12 @@ def create_event(body: EventCreate, request: Request):
                 body.sponsor_name,
                 0,
                 digest,
+                spec.game_id,
+                spec.rules_version,
             ),
         )
         c.execute('INSERT INTO event_tracks VALUES(?,?)', (event_id, body.track))
-    return {"id": event_id, "sandbox_digest": digest}
+    return {"id": event_id, "sandbox_digest": digest, "game": spec.game_id}
 
 
 @app.post("/api/admin/events/{event_id}/start")
@@ -892,12 +978,15 @@ def hand_log_index(request: Request, round_id: str | None = None):
     with db.connect() as c:
         if round_id:
             logs = c.execute(
-                "SELECT id,table_index,seed,created_at FROM hand_logs WHERE round_id=? ORDER BY table_index",
+                """SELECT l.id,l.table_index,l.seed,l.created_at,m.job_id FROM hand_logs l
+                   LEFT JOIN hand_log_metadata m ON m.hand_log_id=l.id
+                   WHERE l.round_id=? ORDER BY l.created_at,l.table_index""",
                 (round_id,),
             ).fetchall()
         else:
             logs = c.execute(
-                "SELECT id,table_index,seed,created_at FROM hand_logs ORDER BY created_at DESC LIMIT 200"
+                """SELECT l.id,l.table_index,l.seed,l.created_at,m.job_id FROM hand_logs l
+                   LEFT JOIN hand_log_metadata m ON m.hand_log_id=l.id ORDER BY l.created_at DESC LIMIT 200"""
             ).fetchall()
     return {"logs": [dict(r) for r in logs]}
 
@@ -906,11 +995,13 @@ def hand_log_index(request: Request, round_id: str | None = None):
 def hand_log_detail(log_id: str, request: Request):
     require_admin(request)
     with db.connect() as c:
-        row = c.execute("SELECT * FROM hand_logs WHERE id=?", (log_id,)).fetchone()
+        row = c.execute("""SELECT l.*,m.job_id,m.seating FROM hand_logs l
+            LEFT JOIN hand_log_metadata m ON m.hand_log_id=l.id WHERE l.id=?""", (log_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Hand log not found.")
     detail = dict(row)
     detail["log"] = db.json_value(detail["log"])
+    detail["seating"] = db.json_value(detail["seating"])
     return detail
 
 

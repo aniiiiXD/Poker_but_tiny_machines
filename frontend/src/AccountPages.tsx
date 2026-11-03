@@ -3,6 +3,7 @@ import { post, useData, type Data } from "./api";
 import { A, Notice, Page, go } from "./ui";
 
 export function Auth({ refresh }: { refresh: () => void }) {
+  const github = useData("/github/config");
   const [register, setRegister] = useState(true),
     [form, setForm] = useState({
       name: "",
@@ -35,8 +36,8 @@ export function Auth({ refresh }: { refresh: () => void }) {
             e.preventDefault();
             setBusy(true);
             post("/auth/" + (register ? "register" : "login"), form)
-              .then((r) => {
-                if (register && r.verification !== "smtp") setSent(true);
+              .then(() => {
+                if (register) setSent(true);
                 refresh();
                 if (!register) go("/profile");
               })
@@ -87,6 +88,12 @@ export function Auth({ refresh }: { refresh: () => void }) {
           <button className="button primary" disabled={busy} type="submit">
             {busy ? "Please wait…" : register ? "Create account" : "Log in"}
           </button>
+          {github.data?.configured && (
+            <>
+              <div className="auth-divider"><span>or</span></div>
+              <a href="/api/github/login" className="button ink github-login">Continue with GitHub</a>
+            </>
+          )}
           <button
             type="button"
             className="text-button"

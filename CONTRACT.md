@@ -1,6 +1,6 @@
-# Campus Arena — implementation contract
+# Stack Theory — implementation contract
 
-New standalone workspace. No changes to Passkarwado. Working brand: Campus Arena.
+New standalone workspace. No changes to Passkarwado. Working brand: Stack Theory.
 Real online Python pokerbot platform inspired by Sequoia's format, no affiliation.
 Backend Python FastAPI/SQLite/PokerKit at127.0.0.1:8001. Frontend React/Vite at127.0.0.1:5173 proxies /api to backend. Backend own folder. No paid model API calls.
 

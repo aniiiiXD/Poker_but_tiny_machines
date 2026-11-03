@@ -1,4 +1,4 @@
-# Games and GPU kernel challenges for Campus Arena
+# Games and GPU kernel challenges for Stack Theory
 
 Status: product research and recommendations, not a list of implemented features. The current engine implements no-limit Texas Hold'em; the other games and all GPU kernels below are proposals.
 

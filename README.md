@@ -1,8 +1,14 @@
-# Campus Arena
+# Stack Theory
 
 An online Python bot-building competition for college students. A new independent
 project in this directory, with its frontend and backend kept separate from
 Passkarwado and from each other.
+
+The backend also contains a GitHub App integration and an initial CPU model
+project track. GitHub requires a configured GitHub App; the workshop provides
+repository connection and model upload screens. See [backend integration notes](plans/GITHUB_MODEL_BACKEND.md), the
+[AWS and Vercel deployment plan](plans/AWS_VERCEL_ARCHITECTURE.md), and the
+[games and GPU kernel challenge report](plans/GAMES_AND_GPU_KERNELS_REPORT.md).
 
 ## Open the application
 
@@ -56,8 +62,13 @@ make serve
   snapshots, random tables, non-scoring filler copies, weighted results and rankings.
 - Operator API/CLI for events, starting rounds, and reading sponsor inquiries.
 - SQLite persistence for accounts, teams, source versions, runs, events and results.
-  After a server restart, queued jobs remain queued; interrupted jobs are marked
-  failed with an explanation. Operators can retry a failed round.
+  Workers use expiring leases and heartbeats; expired claimed jobs are marked
+  failed, and an operator can retry a failed round. Jobs already running before
+  the lease migration need operator review.
+- GitHub App OAuth, repository connection, signed push webhooks and commit-based
+  validation APIs, once an App is configured. An initial CPU-only model track
+  accepts bounded multi-file projects and local weights. Both have workshop UI;
+  GitHub requires an App to be configured.
 
 ## Try the complete student flow
 
@@ -65,7 +76,7 @@ make serve
 2. Create a team, even when competing solo. A teammate can join with your code.
 3. Open Workshop, edit the supplied Python agent, and save a submission.
 4. Run **Practice with my bot**. Open the resulting replay and inspect the decisions.
-5. Join **Campus Open · Founding round**. The operator can start its build phase
+5. Join **Stack Theory Open · Founding round**. The operator can start its build phase
    and scored rounds using the commands in `OPERATIONS.md`.
 
 The exhibition leaderboard comes from actual built-in bot games. Student results
@@ -109,19 +120,23 @@ complete real sandboxed round. See `backend/sandbox/README.md` for timing detail
 This is a functioning **local pilot**, not a deployed public service. No cloud
 resources, payment accounts, sponsor emails or paid model APIs are connected.
 Sponsor inquiries are stored locally for the operator; no email is sent.
-University affiliation is self-reported, and account email is not verified yet.
-Password recovery, a distributed worker fleet, production monitoring and public
-hosting are not configured. Use one API process: it owns the single local worker.
-Do not run multiple API processes against this queue.
+University affiliation is self-reported. Email verification and password reset
+are implemented; without SMTP their links are written to the local outbox.
+Distributed workers, production monitoring and public hosting are not configured.
+Use the single-process local setup until the new worker leases have been
+stress-tested with multiple processes.
 
-The 1 ms default is a supervisor-enforced wall-time cutoff inside the sandbox,
+The classic track's 1 ms default is a supervisor-enforced wall-time cutoff inside the sandbox,
 including worker scheduling and serialization. This is not a hard real-time system;
 load can produce timeouts. Initialization and Docker startup have separate limits.
 Each table resets the agent using a new container. Students submit a single source
-file up to **100 KiB** with standard-library dependencies. No model-weight uploads
-or live inference APIs are supported by this pilot.
+file up to **100 KiB** with standard-library dependencies. The initial model track
+accepts project archives up to 16 MiB (compressed and uncompressed), includes Python and NumPy 2.1.3, and supports CPU inference with local weights. It has a
+512 MB sandbox memory limit and a 50 ms practice decision budget. External model
+APIs, other third-party ML libraries, large model artifacts and GPU execution are not
+supported by this pilot.
 
-Campus Arena is inspired by the publicly described bot-building format; it is
+Stack Theory is inspired by the publicly described bot-building format; it is
 not affiliated with Sequoia, OpenAI, or Citadel Securities and does not claim to
 implement their private starter kit or unreleased poker variant. Source references
 are in `REFERENCES.md`.

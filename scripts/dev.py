@@ -37,7 +37,7 @@ signal.signal(signal.SIGTERM, cleanup)
 try:
     children.append(subprocess.Popen(['uv','run','uvicorn','arena.app:app','--host','127.0.0.1','--port','8001'], cwd=ROOT/'backend', start_new_session=True))
     children.append(subprocess.Popen(['pnpm','dev'], cwd=ROOT/'frontend', start_new_session=True))
-    print('\nCampus Arena: http://127.0.0.1:5173\nAPI docs: http://127.0.0.1:8001/docs\n', flush=True)
+    print('\nStack Theory: http://127.0.0.1:5173\nAPI docs: http://127.0.0.1:8001/docs\n', flush=True)
     while all(child.poll() is None for child in children):
         time.sleep(.5)
 finally:

@@ -1,4 +1,4 @@
-# Campus Arena starter kit
+# Stack Theory starter kit
 
 Implement `class Agent` with `act(self, observation: dict) -> dict` in a single
 UTF-8 Python file. Standard library only. The platform supplies the game engine.

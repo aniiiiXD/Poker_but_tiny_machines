@@ -6,7 +6,9 @@ backend/data/
 **/__pycache__/
 frontend/node_modules/
 frontend/dist/
+frontend/.vercel/
 frontend/tsconfig.tsbuildinfo
 .env
 .env.local
+.env.*.local
 *.log

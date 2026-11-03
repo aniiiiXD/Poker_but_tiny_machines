@@ -8,7 +8,7 @@ export function Events() {
   return (
     <Page
       title="Find your table"
-      lead="Build with your team and compete in a Campus Arena event."
+      lead="Build with your team and compete in a Stack Theory event."
       eyebrow="Events"
     >
       <Notice error={error} />
@@ -29,7 +29,7 @@ export function Events() {
                   {e.description}
                 </p>
               </span>
-              <Status text={e.exhibition ? "Exhibition" : e.status} done={e.status === "completed"} />
+              <Status text={e.exhibition ? "Exhibition" : e.status} done={["completed", "closed"].includes(e.status)} />
               <span className="meta">
                 {fmtDay(e.build_starts_at)} · {e.entry_count} teams · {e.round_count} rounds
               </span>
@@ -75,12 +75,16 @@ export function EventDetail({
       </Page>
     );
   const e = data.event;
+  const closed = e.exhibition || ["completed", "closed"].includes(e.status);
+  const canJoin = ["registration", "building"].includes(e.status) &&
+    new Date(e.build_ends_at).getTime() > Date.now();
   const facts: [string, string][] = [
     ["Build starts", fmtLong(e.build_starts_at)],
     ["Build ends", fmtLong(e.build_ends_at)],
     ["Round interval", Math.round(e.round_interval_seconds / 60) + " min"],
     ["Maximum hands", String(e.max_hands)],
     ["Game", e.variant],
+    ["Bot track", e.track === "model" ? "Model project" : "Classic bot"],
     ["Rounds", String(e.round_count)],
     ["Decision time", e.decision_ms + " ms"],
     ["Tables per round", String(e.tables_per_round)],
@@ -94,19 +98,20 @@ export function EventDetail({
             <div style={{ display: "flex", gap: 20, alignItems: "baseline", flexWrap: "wrap" }}>
               <Status
                 text={e.exhibition ? "Exhibition" : e.status}
-                done={e.status === "completed"}
+                done={closed}
               />
               <span className="muted">{e.entry_count} teams entered</span>
             </div>
-            <h2 style={{ margin: "12px 0 8px" }}>Bring your best bot</h2>
+            <h2 style={{ margin: "12px 0 8px" }}>{closed ? "This event has closed" : "Bring your best bot"}</h2>
             <p className="muted">
-              Join with your team, then submit a bot before the round begins.
-              Each table plays at most {e.max_hands} hands.
+              {closed
+                ? "Registration has ended. Check the schedule for the next event."
+                : `Join with your team, then submit a bot before the round begins. Each table plays at most ${e.max_hands} hands.`}
             </p>
             <div style={{ marginTop: 18 }}>
               <Button
                 kind="primary"
-                disabled={busy || e.joined || e.status === "completed" || e.exhibition}
+                disabled={busy || e.joined || closed || !canJoin}
                 onClick={() => {
                   setBusy(true);
                   post("/events/" + id + "/join")
@@ -118,7 +123,7 @@ export function EventDetail({
                     .finally(() => setBusy(false));
                 }}
               >
-                {e.exhibition || e.status === "completed"
+                {closed || !canJoin
                   ? "Event closed"
                   : e.joined
                     ? "Your team has joined"
@@ -147,7 +152,7 @@ export function EventDetail({
               ))}
             </div>
           ) : (
-            <div className="empty">Rounds will appear when scheduled.</div>
+            <div className="empty">{closed ? "No rounds were played." : "Rounds will appear when scheduled."}</div>
           )}
 
           <h2 className="display-2" style={{ margin: "40px 0 16px" }}>
@@ -253,7 +258,7 @@ export function Replays() {
               </span>
               <Status text={r.source} done={r.source === "practice"} />
               <span className="meta">
-                {r.hand_count} hands · {fmtDay(r.created_at)}
+                {r.hand_count} {r.game === "bluff" ? "match" : "hands"} · {fmtDay(r.created_at)}
               </span>
             </A>
           ))}

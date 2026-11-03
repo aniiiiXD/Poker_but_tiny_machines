@@ -1,4 +1,11 @@
-# Running Campus Arena in production
+# Running Stack Theory in production
+
+**Status:** This older single-host guide is not a production-readiness guarantee.
+For the current AWS/Vercel design, GitHub integration, worker lease limitations,
+model runtime and remaining launch work, see [the deployment plan](plans/AWS_VERCEL_ARCHITECTURE.md)
+and [backend integration notes](plans/GITHUB_MODEL_BACKEND.md). Do not start the
+multi-process services below as a public deployment without the testing and
+isolation described there.
 
 One machine is enough for a pilot: the API serves the built frontend and the
 database; separate worker processes claim jobs from the queue and drive Docker.

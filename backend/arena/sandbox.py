@@ -6,6 +6,7 @@ import base64
 import math
 import os
 from pathlib import Path
+import re
 import selectors
 import shutil
 import subprocess
@@ -13,9 +14,34 @@ import time
 import uuid
 
 IMAGE = "campus-arena-bot:local"
+MODEL_IMAGE = "campus-arena-model:local"
 MAX_SOURCE_BYTES = 102_400
 MAX_OBSERVATION_BYTES = 60_000
 MAX_REPLY_BYTES = 20_000
+
+_BLUFF_CARD = re.compile(r"^[A23456789TJQK][cdhs]$")
+
+
+def reply_validator_for(protocol: str):
+    """Strict allow-lists for the action vocabularies of registered games."""
+    if protocol == "poker":
+        def validate(result):
+            return type(result) is dict and result.get("action") in ("fold", "check", "call", "raise")
+        return validate
+    if protocol == "bluff":
+        def validate(result):
+            if type(result) is not dict:
+                return False
+            kind = result.get("type")
+            if kind in ("challenge", "pass"):
+                return True
+            if kind == "play":
+                cards = result.get("cards")
+                return (type(cards) is list and 1 <= len(cards) <= 4 and
+                        all(type(card) is str and _BLUFF_CARD.fullmatch(card) for card in cards))
+            return False
+        return validate
+    raise ValueError(f"Unknown sandbox protocol '{protocol}'")
 
 
 class BotError(RuntimeError):
@@ -69,13 +95,13 @@ def _sandbox_status_uncached() -> dict:
         return {"available": False, "image": False, "error": "Docker health check timed out or failed"}
 
 
-def image_id() -> str | None:
+def image_id(image: str = IMAGE) -> str | None:
     """Immutable local image id (sha256:...), so rounds can pin their runtime."""
     if not shutil.which("docker"):
         return None
     try:
         result = subprocess.run(
-            docker_command() + ["image", "inspect", "--format", "{{.Id}}", IMAGE],
+            docker_command() + ["image", "inspect", "--format", "{{.Id}}", image],
             capture_output=True, text=True, timeout=3, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -93,13 +119,16 @@ class ContainerBot:
     2 s in-container. No automatic host fallback exists.
     """
 
-    def __init__(self, source_path: Path, name: str, decision_ms: float = 1.0, image: str | None = None):
+    def __init__(self, source_path: Path, name: str, decision_ms: float = 1.0, image: str | None = None,
+                 protocol: str = "poker"):
         self.source_path = Path(source_path)
         self.name = name
         if not math.isfinite(decision_ms) or not 0 < decision_ms <= 1000:
             raise ValueError("decision_ms must be in (0, 1000]")
         self.decision_ms = float(decision_ms)
         self.image_ref = image or IMAGE
+        self.protocol = protocol
+        self._validate_reply = reply_validator_for(protocol)
         self.last_elapsed_ms: float | None = None
         self._process: subprocess.Popen | None = None
         self._container: str | None = None
@@ -204,7 +233,8 @@ class ContainerBot:
             raw = source_file.read(MAX_SOURCE_BYTES + 1)
         if len(raw) > MAX_SOURCE_BYTES:
             raise BotError('Bot source exceeds 100 KiB')
-        return {'source': raw.decode('utf-8'), 'decision_ms': self.decision_ms}
+        return {'source': raw.decode('utf-8'), 'decision_ms': self.decision_ms,
+                'protocol': self.protocol}
 
     memory_mb = 128
     tmpfs_mb = 16
@@ -236,12 +266,20 @@ class ContainerBot:
             self._write({"command": "act", "observation": observation})
             reply = self._read(1.0)
             result = reply.get("result")
-            if type(result) is not dict or result.get("action") not in ("fold", "check", "call", "raise"):
+            if not self._validate_reply(result):
                 raise BotError("Invalid action from sandbox")
             self.last_elapsed_ms = reply.get("elapsed_ms")
             return result
         except (BotError, OSError, ValueError, TypeError) as exc:
             self.close()
+            # A disappeared Docker daemon is infrastructure, not a bot fault.
+            # A healthy daemon with a crashed/timed-out worker remains a bot fault.
+            if isinstance(exc, BotError) and any(x in str(exc) for x in (
+                'Sandbox exited', 'transport timed out', 'Sandbox input closed'
+            )):
+                status = _sandbox_status_uncached()
+                if not status.get('available'):
+                    raise SandboxDown('Docker became unavailable during a decision') from exc
             if isinstance(exc, BotError):
                 raise
             raise BotError("Bot execution failed") from exc
@@ -284,9 +322,14 @@ class ModelContainerBot(ContainerBot):
     memory_mb = 512
     tmpfs_mb = 48
 
+    def __init__(self, source_path: Path, name: str, decision_ms: float = 50.0, image: str | None = None,
+                 protocol: str = "poker"):
+        super().__init__(source_path, name, decision_ms, image or MODEL_IMAGE, protocol)
+
     def _initial_config(self):
         with self.source_path.open('rb') as project_file:
             raw = project_file.read(16_777_217)
         if len(raw) > 16_777_216:
             raise BotError('Model project exceeds 16 MiB')
-        return {'project_zip': base64.b64encode(raw).decode('ascii'), 'decision_ms': self.decision_ms}
+        return {'project_zip': base64.b64encode(raw).decode('ascii'), 'decision_ms': self.decision_ms,
+                'protocol': self.protocol}

@@ -1,4 +1,4 @@
-# Modeling the models — theory → Campus Arena engineering
+# Modeling the models — theory → Stack Theory engineering
 
 How each research line becomes something we can actually build. Every model
 here must live inside the platform's physical constraints:

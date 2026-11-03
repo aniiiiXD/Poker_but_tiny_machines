@@ -19,6 +19,20 @@ const TOOLS: [string, string][] = [
   ["/rules", "Rules"],
 ];
 
+function Brand() {
+  return (
+    <A to="/" className="brand">
+      <span className="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M4 7.5 12 4l8 3.5-8 3.5-8-3.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+          <path d="m4 11 8 3.5 8-3.5M4 14.5l8 3.5 8-3.5M4 18l8 3.5 8-3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
+      <span>Stack Theory</span>
+    </A>
+  );
+}
+
 function VerifyBanner({ me }: { me: Data | null }) {
   const [state, setState] = useState("");
   if (!me?.user || me.user.email_verified) return null;
@@ -111,12 +125,7 @@ function App() {
       </a>
       <header className="site-header">
         <div className="nav-wrap">
-          <A to="/" className="brand">
-            <span className="brand-mark" aria-hidden="true">
-              ♠
-            </span>
-            <span>Campus Arena</span>
-          </A>
+          <Brand />
           <nav className="site-nav" aria-label="Main">
             <A to="/" className={!isPublic || path === "/" ? "active" : ""}>
               Arena
@@ -150,13 +159,8 @@ function App() {
       </div>
       <footer className="footer">
         <div className="wrap footer-inner">
-          <A to="/" className="brand">
-            <span className="brand-mark" aria-hidden="true">
-              ♠
-            </span>
-            <span>Campus Arena</span>
-          </A>
-          <p className="tagline">Code competes. Simulated chips. Real decisions.</p>
+          <Brand />
+          <p className="tagline">Where code comes to compete.</p>
           <nav aria-label="Footer">
             <A to="/">Arena</A>
             <A to="/sponsors">Sponsors</A>

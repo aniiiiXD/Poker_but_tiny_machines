@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { api, post, useData, type Data } from "./api";
 import { A, Button, Notice, Page } from "./ui";
+import { SubmissionSources } from "./SubmissionSources";
+
+type Draft = { game: string; source: string | null; name: string };
+
+function readDraft(game: string): Draft {
+  const source = localStorage.getItem(`arena-draft-source-${game}`) ??
+    (game === "poker" ? localStorage.getItem("arena-draft-source") : null);
+  const name = localStorage.getItem(`arena-draft-name-${game}`) ??
+    (game === "poker" ? localStorage.getItem("arena-draft-name") : null) ?? "My bot";
+  return { game, source, name };
+}
 
 function CodeEditor({
   source,
@@ -58,26 +69,39 @@ function CodeEditor({
 }
 
 export function Workshop({ me }: { me: Data | null }) {
-  const starter = useData("/starter"),
+  const games = useData("/games");
+  const [game, setGame] = useState(
+    () => new URLSearchParams(location.search).get("game") || "poker",
+  );
+  const starter = useData(`/starter?game=${game}`),
     subs = useData("/submissions");
-  const [source, setSource] = useState(
-      () => localStorage.getItem("arena-draft-source") || "",
-    ),
-    [name, setName] = useState(
-      () => localStorage.getItem("arena-draft-name") || "My bot",
-    ),
+  const [draft, setDraft] = useState<Draft>(() => readDraft(game)),
     [error, setError] = useState(""),
     [success, setSuccess] = useState(""),
     [job, setJob] = useState<Data | null>(null),
     [busy, setBusy] = useState(false);
+  const isBluff = game === "bluff";
+  const source = draft.game === game ? (draft.source ?? "") : "";
+  const name = draft.game === game ? draft.name : "My bot";
+  const setSource = (next: string) => setDraft((current) => ({ ...current, source: next }));
+  const setName = (next: string) => setDraft((current) => ({ ...current, name: next }));
   useEffect(() => {
-    if (starter.data?.source && localStorage.getItem("arena-draft-source") === null)
-      setSource(starter.data.source);
-  }, [starter.data]);
+    const url = new URL(location.href);
+    url.searchParams.set("game", game);
+    history.replaceState(null, "", url);
+  }, [game]);
   useEffect(() => {
-    if (source) localStorage.setItem("arena-draft-source", source);
-    localStorage.setItem("arena-draft-name", name);
-  }, [source, name]);
+    // Do not hydrate from the previous game's still-in-flight starter response.
+    if (starter.data?.game !== game || typeof starter.data?.source !== "string") return;
+    const initialSource = starter.data.source as string;
+    setDraft((current) => current.game === game && current.source === null
+      ? { ...current, source: initialSource } : current);
+  }, [game, starter.data]);
+  useEffect(() => {
+    if (draft.game !== game || draft.source === null) return;
+    localStorage.setItem(`arena-draft-source-${game}`, draft.source);
+    localStorage.setItem(`arena-draft-name-${game}`, draft.name);
+  }, [draft, game]);
   useEffect(() => {
     if (!job?.id || ["completed", "failed"].includes(job.status)) return;
     let cancelled = false;
@@ -95,15 +119,19 @@ export function Workshop({ me }: { me: Data | null }) {
       clearInterval(timer);
     };
   }, [job?.id, job?.status]);
-  const active = subs.data?.submissions?.find((s: Data) => s.active);
+  const active = subs.data?.submissions?.find(
+    (s: Data) => s.active && s.game === game,
+  );
   const cooldown = subs.data?.cooldown_remaining ?? 0;
   function practice(custom: boolean) {
     setError("");
     setBusy(true);
-    post(
-      "/practice",
-      custom ? { submission_id: active.id, hands: 20 } : { hands: 20 },
-    )
+    const body = custom
+      ? { submission_id: active.id, game }
+      : { game };
+    if (isBluff) (body as Data).matches = 1;
+    else (body as Data).hands = 20;
+    post("/practice", body)
       .then((r) => setJob({ id: r.job_id, status: "queued", progress: 0 }))
       .catch((e) => setError(e.message))
       .finally(() => setBusy(false));
@@ -112,7 +140,7 @@ export function Workshop({ me }: { me: Data | null }) {
     setBusy(true);
     setError("");
     setSuccess("");
-    post("/submissions", { name, source })
+    post("/submissions", { name, source, game })
       .then(() => {
         setSuccess("Bot saved and active. The next round uses this bot.");
         subs.load();
@@ -131,6 +159,26 @@ export function Workshop({ me }: { me: Data | null }) {
       lead="Write a strategy, save your bot, and see how it plays."
       eyebrow="Build"
     >
+      <SubmissionSources me={me} onAccepted={subs.load} game={game} />
+      <div className="game-tabs" role="tablist" aria-label="Game">
+        {(games.data?.games || []).map((g: Data) => (
+          <button
+            key={g.id}
+            role="tab"
+            aria-selected={game === g.id}
+            className={"game-tab" + (game === g.id ? " on" : "")}
+            onClick={() => {
+              setDraft(readDraft(g.id));
+              setGame(g.id);
+              setJob(null);
+              setError("");
+              setSuccess("");
+            }}
+          >
+            {g.name}
+          </button>
+        ))}
+      </div>
       <div className="workshop-grid">
         <div>
           <div
@@ -144,7 +192,7 @@ export function Workshop({ me }: { me: Data | null }) {
             }}
           >
             <h2 className="display-2">Make your move</h2>
-            <a href="/api/starter/download" className="text-button">
+            <a href={`/api/starter/download?game=${game}`} className="text-button">
               Download starter ↓
             </a>
           </div>
@@ -177,7 +225,9 @@ export function Workshop({ me }: { me: Data | null }) {
           <div className="panel">
             <h3 className="display-3">Practice table</h3>
             <p className="muted" style={{ marginTop: 6 }}>
-              Run 20 hands and inspect every decision in the replay.
+              {isBluff
+                ? "Play one full Bluff match against three built-in strategies and inspect every decision in the replay."
+                : "Run 20 hands and inspect every decision in the replay."}
             </p>
             <div className="stack" style={{ marginTop: 14 }}>
               <Button
@@ -208,7 +258,10 @@ export function Workshop({ me }: { me: Data | null }) {
                 {job.result && (
                   <>
                     <p className="muted" style={{ fontSize: 14 }}>
-                      {job.result.hands} hands ·{" "}
+                      {job.result.matches
+                        ? `${job.result.matches} match${job.result.matches === 1 ? "" : "es"}`
+                        : `${job.result.hands} hands`}{" "}
+                      ·{" "}
                       {job.result.scores.reduce(
                         (total: number, score: Data) => total + score.faults,
                         0,
@@ -220,7 +273,8 @@ export function Workshop({ me }: { me: Data | null }) {
                         <div key={i}>
                           <strong>{score.name}</strong>
                           <span>
-                            {score.points} pts · {score.chips} chips ·{" "}
+                            {score.points} pts
+                            {score.chips !== undefined ? ` · ${score.chips} chips` : ""} ·{" "}
                             {score.faults} faults
                             {score.error ? ` · ${score.error}` : ""}
                           </span>
@@ -229,7 +283,8 @@ export function Workshop({ me }: { me: Data | null }) {
                     </div>
                     <p className="fault-note">
                       Faults include errors, timeouts, and illegal actions; the
-                      engine falls back to a legal check or fold.
+                      engine falls back to a legal{" "}
+                      {isBluff ? "play or pass" : "check or fold"}.
                     </p>
                     <A className="text-button" to={"/replays/" + job.result.replay_id}>
                       Open replay →
@@ -262,28 +317,34 @@ export function Workshop({ me }: { me: Data | null }) {
               <p className="muted" style={{ marginTop: 6 }}>
                 Log in to save your bot.
               </p>
-            ) : subs.data?.submissions?.length ? (
+            ) : subs.data?.submissions?.filter((s: Data) => s.game === game).length ? (
               <div style={{ marginTop: 6 }}>
-                {subs.data.submissions.map((s: Data) => (
-                  <div className="list-row" key={s.id}>
-                    <span>
-                      {s.name} {s.active ? <small>active</small> : null}
-                    </span>
-                    <button
-                      className="text-button"
-                      onClick={() => {
-                        setSource(s.source);
-                        setName(s.name);
-                      }}
-                    >
-                      Load
-                    </button>
-                  </div>
-                ))}
+                {subs.data.submissions
+                  .filter((s: Data) => s.game === game)
+                  .map((s: Data) => (
+                    <div className="list-row" key={s.id}>
+                      <span>
+                        {s.name} {s.active ? <small>active</small> : null}
+                        <small> {s.track === "model" ? "model" : "classic"} · {s.status}</small>
+                        {s.github_commit && <small> · {s.github_commit.slice(0, 7)}</small>}
+                      </span>
+                      {s.track !== "model" && (
+                        <button
+                          className="text-button"
+                          onClick={() => {
+                            setSource(s.source);
+                            setName(s.name);
+                          }}
+                        >
+                          Load
+                        </button>
+                      )}
+                    </div>
+                  ))}
               </div>
             ) : (
               <p className="muted" style={{ marginTop: 6 }}>
-                No submissions yet.
+                No {isBluff ? "Bluff" : "Poker"} submissions yet.
               </p>
             )}
           </div>

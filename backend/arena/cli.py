@@ -6,10 +6,11 @@ import argparse
 import json
 import time
 from . import db, worker
+from .sandbox import MODEL_IMAGE, image_id
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Campus Arena local operator")
+    parser = argparse.ArgumentParser(description="Stack Theory local operator")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("events", help="List events and their round status")
     admin = sub.add_parser("make-admin", help="Promote an existing registered account")
@@ -23,6 +24,8 @@ def main():
     create.add_argument("--interval", type=int, default=1200)
     create.add_argument("--starts-in", type=int, default=60, help="Minutes until build starts")
     create.add_argument("--sponsor", default=None)
+    create.add_argument("--track", choices=("classic", "model"), default="classic")
+    create.add_argument("--game", default="poker", help="registered game ID (e.g. poker, bluff)")
     run = sub.add_parser("run-round", help="Freeze submissions and enqueue the next round now")
     run.add_argument("event_id")
     start = sub.add_parser("start-build", help="Open an event build phase now")
@@ -31,7 +34,7 @@ def main():
     args = parser.parse_args()
     if not (db.DATA / "arena.sqlite").exists():
         db.initialize()
-    # Never call initialize() while a server is running: it performs startup recovery.
+    # A running server owns its active worker leases.
     if args.command == "make-admin":
         with db.connect(True) as c:
             result = c.execute("UPDATE users SET role='admin' WHERE email=?", (args.email.strip().lower(),))
@@ -40,7 +43,7 @@ def main():
         print("Administrator access granted to the registered account.")
     elif args.command == "events":
         with db.connect() as c:
-            for event in c.execute("SELECT id,title,status FROM events ORDER BY build_starts_at"):
+            for event in c.execute("SELECT id,title,status FROM events ORDER BY build_starts_at").fetchall():
                 print(dict(event))
                 for row in c.execute(
                     "SELECT number,status,entries_count FROM rounds WHERE event_id=? ORDER BY number",
@@ -61,26 +64,42 @@ def main():
             )
         event_id = worker.ident()
         starts = time.time() + args.starts_in * 60
+        from .games import GameError, get_game
+
+        try:
+            spec = get_game(args.game)
+        except GameError as exc:
+            parser.error(str(exc))
+        digest = image_id(MODEL_IMAGE) if args.track == "model" else image_id()
+        if not digest:
+            parser.error("Build the matching sandbox image before creating an event: make sandbox")
         with db.connect(True) as c:
             c.execute(
-                "INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                """INSERT INTO events(id,title,description,status,variant,build_starts_at,
+                   build_ends_at,round_interval_seconds,round_count,tables_per_round,max_hands,
+                   decision_ms,sponsor_name,exhibition,sandbox_digest,game_id,rules_version)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     event_id,
                     args.title[:100],
                     "An online Python pokerbot tournament. Build, test, compete, and replay your decisions.",
                     "registration",
-                    "No-limit Texas Hold’em",
+                    spec.variant_label,
                     starts,
                     starts + args.build_minutes * 60,
                     args.interval,
                     args.rounds,
                     args.tables,
                     args.hands,
-                    1.0,
+                    50.0 if args.track == "model" else 1.0,
                     args.sponsor,
                     0,
+                    digest,
+                    spec.game_id,
+                    spec.rules_version,
                 ),
             )
+            c.execute("INSERT INTO event_tracks VALUES(?,?)", (event_id, args.track))
         print(event_id)
     elif args.command == "run-round":
         try:

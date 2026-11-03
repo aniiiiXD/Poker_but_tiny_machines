@@ -19,12 +19,12 @@ def test_real_round_freezes_sources_and_produces_scored_replay(tmp_path, monkeyp
     now = time.time()
     with db.connect(True) as c:
         from arena.sandbox import image_id
-        c.execute('INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', ('real-round', 'Real round test', 'Isolated test', 'building', 'NLHE', now - 100, now - 1, 10, 1, 1, 4, 1.0, None, 0, image_id()))
+        c.execute('INSERT INTO events(id,title,description,status,variant,build_starts_at,build_ends_at,round_interval_seconds,round_count,tables_per_round,max_hands,decision_ms,sponsor_name,exhibition,sandbox_digest,game_id,rules_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', ('real-round', 'Real round test', 'Isolated test', 'building', 'NLHE', now - 100, now - 1, 10, 1, 1, 4, 1.0, None, 0, image_id(), 'poker', 1))
         for i in range(2):
             c.execute('INSERT INTO teams VALUES(?,?,?,?)', (f'team{i}', f'Test bot {i}', f'CODE{i}', now))
             c.execute('INSERT INTO users(id,name,email,password,college,role,team_id,created_at,email_verified) VALUES(?,?,?,?,?,?,?,?,1)', (f'user{i}', 'Test user', f'{i}@test.invalid', 'unused', 'Test college', 'student', f'team{i}', now))
             c.execute('INSERT INTO entries VALUES(?,?,?)', ('real-round', f'team{i}', now))
-            c.execute('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?,?)', (f'bot{i}', f'team{i}', 'Test bot', source, 'testhash', now, 'accepted', None, 1))
+            c.execute('INSERT INTO submissions(id,team_id,name,source,sha256,created_at,status,error,active,game_id,rules_version) VALUES(?,?,?,?,?,?,?,?,?,"poker",1)', (f'bot{i}', f'team{i}', 'Test bot', source, 'testhash', now, 'accepted', None, 1))
             (db.DATA / 'bots' / f'bot{i}.py').write_text(source)
     job_id = worker.enqueue_round('real-round', manual=True)
     with db.connect() as c:

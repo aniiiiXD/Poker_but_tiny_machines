@@ -1,4 +1,4 @@
-# Campus Arena
+# Stack Theory
 
 ## Register
 brand

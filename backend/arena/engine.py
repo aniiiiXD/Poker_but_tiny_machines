@@ -139,6 +139,8 @@ def play_table(bots: list, seed: int, max_hands: int = 200, starting_stack: int 
                     amount = decision.get('amount')
                     if action == 'raise' and (type(amount) is not int or not state.can_complete_bet_or_raise_to(amount)):
                         raise ValueError('illegal raise')
+                except SandboxDown:
+                    raise
                 except Exception as exc:
                     faults[seat] += 1
                     if errors[seat] is None:

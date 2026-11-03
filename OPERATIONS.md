@@ -1,5 +1,11 @@
 # Local event operations
 
+The current local pilot is running as the user-session launchd job
+`local.campus-arena` at http://127.0.0.1:8001. Its logs are in
+`/tmp/campus-arena-server.log` and `/tmp/campus-arena-server-error.log`.
+Stop this session's server with `launchctl remove local.campus-arena`; this
+submitted job is not configured to restart automatically after a reboot.
+
 Run commands from `backend/` while the application server is running. These
 commands act only on this project's local database. There is no preset admin
 password, no automatic first-user admin promotion, and no public round control.

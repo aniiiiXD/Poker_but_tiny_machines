@@ -1,4 +1,5 @@
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -190,3 +191,22 @@ def test_unverified_users_cannot_submit(clients):
     team(c, 'Unverified team')
     blocked = c.post('/api/submissions', json={'name': 'Bot', 'source': SOURCE})
     assert blocked.status_code == 403
+
+
+def test_expired_empty_event_is_reported_closed_without_changing_record(clients):
+    client = clients[0]
+    now = time.time()
+    with db.connect(True) as c:
+        c.execute('INSERT INTO events(id,title,description,status,variant,build_starts_at,build_ends_at,round_interval_seconds,round_count,tables_per_round,max_hands,decision_ms,sponsor_name,exhibition,sandbox_digest,game_id,rules_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                  ('empty-past', 'Old event', 'No teams entered', 'building', 'NLHE', now - 7200,
+                   now - 3600, 1200, 2, 1, 10, 1.0, None, 0, None, 'poker', 1))
+        c.execute('INSERT INTO events(id,title,description,status,variant,build_starts_at,build_ends_at,round_interval_seconds,round_count,tables_per_round,max_hands,decision_ms,sponsor_name,exhibition,sandbox_digest,game_id,rules_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                  ('empty-future', 'Future event', 'Still accepting teams', 'building', 'NLHE', now - 60,
+                   now + 3600, 1200, 2, 1, 10, 1.0, None, 0, None, 'poker', 1))
+    entries = {event['id']: event for event in client.get('/api/events').json()['events']}
+    assert entries['empty-past']['status'] == 'closed'
+    assert entries['empty-past']['status_reason'] == 'No teams entered before registration closed.'
+    assert entries['empty-future']['status'] == 'building'
+    assert client.get('/api/events/empty-past').json()['event']['status'] == 'closed'
+    with db.connect() as c:
+        assert c.execute("SELECT status FROM events WHERE id='empty-past'").fetchone()[0] == 'building'

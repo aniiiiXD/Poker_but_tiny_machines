@@ -1,4 +1,4 @@
-# Campus Arena visual system
+# Stack Theory visual system
 
 ## Identity
 A competitive poster wrapped around a tangible game object. Warm bone surfaces, dense red typography, vermilion felt, lacquer rails, ivory cards and striped chips. The main line is “CAN YOUR AI GAMBLE SMART?” The product is a student code competition using simulated chips.

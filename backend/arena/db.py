@@ -21,13 +21,14 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY,user_id TEXT NOT NULL,expires_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS teams (id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,join_code TEXT UNIQUE NOT NULL,created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY,team_id TEXT NOT NULL,name TEXT NOT NULL,
- source TEXT NOT NULL,sha256 TEXT NOT NULL,created_at REAL NOT NULL,status TEXT NOT NULL,error TEXT,active INTEGER NOT NULL DEFAULT 0);
+ source TEXT NOT NULL,sha256 TEXT NOT NULL,created_at REAL NOT NULL,status TEXT NOT NULL,error TEXT,active INTEGER NOT NULL DEFAULT 0,
+ game_id TEXT NOT NULL DEFAULT 'poker',rules_version INTEGER NOT NULL DEFAULT 1);
 CREATE INDEX IF NOT EXISTS submissions_team ON submissions(team_id,created_at);
 CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL,
  status TEXT NOT NULL,variant TEXT NOT NULL,build_starts_at REAL NOT NULL,build_ends_at REAL NOT NULL,
  round_interval_seconds INTEGER NOT NULL,round_count INTEGER NOT NULL,tables_per_round INTEGER NOT NULL,
  max_hands INTEGER NOT NULL,decision_ms REAL NOT NULL,sponsor_name TEXT,exhibition INTEGER NOT NULL DEFAULT 0,
- sandbox_digest TEXT);
+ sandbox_digest TEXT,game_id TEXT NOT NULL DEFAULT 'poker',rules_version INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS entries (event_id TEXT NOT NULL,team_id TEXT NOT NULL,created_at REAL NOT NULL,PRIMARY KEY(event_id,team_id));
 CREATE TABLE IF NOT EXISTS rounds (id TEXT PRIMARY KEY,event_id TEXT NOT NULL,number INTEGER NOT NULL,status TEXT NOT NULL,
  starts_at REAL NOT NULL,finished_at REAL,entries_count INTEGER NOT NULL DEFAULT 0,UNIQUE(event_id,number));
@@ -42,11 +43,15 @@ CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY,kind TEXT NOT NULL,status T
  lease_owner TEXT,lease_until REAL);
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status,created_at);
 CREATE TABLE IF NOT EXISTS replays (id TEXT PRIMARY KEY,title TEXT NOT NULL,created_at REAL NOT NULL,hand_count INTEGER NOT NULL,
- source TEXT NOT NULL,owner_id TEXT,team_id TEXT,frames TEXT NOT NULL,summary TEXT NOT NULL);
+ source TEXT NOT NULL,owner_id TEXT,team_id TEXT,frames TEXT NOT NULL,summary TEXT NOT NULL,
+ game_id TEXT NOT NULL DEFAULT 'poker');
 CREATE TABLE IF NOT EXISTS sponsor_inquiries (id TEXT PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL,company TEXT NOT NULL,message TEXT NOT NULL,created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS hand_logs (id TEXT PRIMARY KEY, round_id TEXT NOT NULL, table_index INTEGER NOT NULL,
  seed INTEGER NOT NULL, created_at REAL NOT NULL, log TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS hand_logs_round ON hand_logs(round_id,table_index);
+CREATE TABLE IF NOT EXISTS hand_log_metadata (
+ hand_log_id TEXT PRIMARY KEY,job_id TEXT NOT NULL,seating TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS score_events (id TEXT PRIMARY KEY, created_at REAL NOT NULL, kind TEXT NOT NULL,
  round_id TEXT, team_id TEXT, payload TEXT NOT NULL, prev_hash TEXT, hash TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS rate_limits (key TEXT PRIMARY KEY,count INTEGER NOT NULL,reset_at REAL NOT NULL);
@@ -64,6 +69,7 @@ CREATE TABLE IF NOT EXISTS github_repositories (
  id TEXT PRIMARY KEY, team_id TEXT NOT NULL, installation_id INTEGER NOT NULL,
  repository_id INTEGER NOT NULL, full_name TEXT NOT NULL, branch TEXT NOT NULL,
  created_at REAL NOT NULL, latest_job_id TEXT, track TEXT NOT NULL DEFAULT 'classic',
+ game_id TEXT NOT NULL DEFAULT 'poker',
  UNIQUE(team_id,repository_id,branch)
 );
 CREATE TABLE IF NOT EXISTS github_deliveries (
@@ -83,6 +89,10 @@ CREATE TABLE IF NOT EXISTS model_submissions (
 );
 CREATE TABLE IF NOT EXISTS event_tracks (
  event_id TEXT PRIMARY KEY, track TEXT NOT NULL CHECK(track IN ('classic','model'))
+);
+CREATE TABLE IF NOT EXISTS research_showcases (
+ team_id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
+ repository_url TEXT, published INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL
 );
 """
 
@@ -144,15 +154,36 @@ def initialize():
             c.execute('ALTER TABLE jobs ADD COLUMN lease_owner TEXT')
         if 'lease_until' not in jobs_cols:
             c.execute('ALTER TABLE jobs ADD COLUMN lease_until REAL')
+        # Multi-game support (GAMES_CONTRACT.md): additive game columns.
+        # Legacy rows keep their poker meaning through the defaults.
+        for table, column, ddl in (
+            ("submissions", "game_id", "TEXT NOT NULL DEFAULT 'poker'"),
+            ("submissions", "rules_version", "INTEGER NOT NULL DEFAULT 1"),
+            ("events", "game_id", "TEXT NOT NULL DEFAULT 'poker'"),
+            ("events", "rules_version", "INTEGER NOT NULL DEFAULT 1"),
+            ("replays", "game_id", "TEXT NOT NULL DEFAULT 'poker'"),
+            ("github_repositories", "game_id", "TEXT NOT NULL DEFAULT 'poker'"),
+        ):
+            cols = {row[1] for row in c.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         c.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
         c.execute("DELETE FROM rate_limits WHERE reset_at < ?", (now,))
+        # Rename only the original seeded event; preserve operator-edited titles.
+        c.execute(
+            "UPDATE events SET title=? WHERE id=? AND title=?",
+            ("Stack Theory Open · Founding round", "campus-open-001", "Campus Open · Founding round"),
+        )
         # Do not reset running jobs here: another API or worker process may own them.
         if not c.execute("SELECT 1 FROM events LIMIT 1").fetchone():
             c.execute(
-                "INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                """INSERT INTO events(id,title,description,status,variant,build_starts_at,
+                   build_ends_at,round_interval_seconds,round_count,tables_per_round,max_hands,
+                   decision_ms,sponsor_name,exhibition,sandbox_digest,game_id,rules_version)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     "campus-open-001",
-                    "Campus Open · Founding round",
+                    "Stack Theory Open · Founding round",
                     "Our first online student event. Build solo or with a teammate, test your strategy, and compete from anywhere. The local pilot is operated from this workspace.",
                     "registration",
                     "No-limit Texas Hold’em",
@@ -166,6 +197,8 @@ def initialize():
                     None,
                     0,
                     None,
+                    "poker",
+                    1,
                 ),
             )
 

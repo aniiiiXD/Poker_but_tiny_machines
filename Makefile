@@ -11,6 +11,7 @@ dev:
 
 sandbox:
 	docker build -t campus-arena-bot:local backend/sandbox
+	docker build -f backend/sandbox/Dockerfile.model -t campus-arena-model:local backend/sandbox
 
 test:
 	cd backend && uv run python -m pytest -q

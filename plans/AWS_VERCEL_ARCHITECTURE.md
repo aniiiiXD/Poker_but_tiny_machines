@@ -1,6 +1,8 @@
-# Campus Arena: AWS + Vercel deployment plan
+# Stack Theory: AWS + Vercel deployment plan
 
-Status: design only. No infrastructure has been provisioned. The AWS CLI currently has no usable credentials, and no existing Passkarwado permissions have been inspected. Do not reuse another product's IAM user or broad credentials for this project.
+Status: the Vercel project `aniiiixds-projects/stack-theory` has been created and configured for Vite with Node 24. No frontend deployment or AWS compute has been provisioned. A read-only check using the existing `PassKarwado` IAM user's access key authenticated to AWS account `169970912263`. The key was used only in a temporary subprocess, not saved to the AWS CLI configuration. Do not reuse another product's IAM user or broad credentials for this project.
+
+The checked user can list S3 buckets and list Lambda functions and ECR repositories in `us-east-1`; the existing `passkarwado` bucket reports region `ap-south-1`. IAM policy inspection, EC2 instance listing in `ap-south-1` and `us-east-1`, and ECS/RDS listing in `us-east-1` were denied. These checks do not establish the user's full effective permissions, whether resources exist in other regions, or whether it can create or modify resources. A suitably authorized administrator must establish dedicated Stack Theory roles and inspect any existing infrastructure before provisioning.
 
 ```text
 Participant browser
@@ -45,7 +47,9 @@ This is a pilot topology, not a reviewed security architecture for arbitrary pub
 
 GitHub App: configure an OAuth callback at `https://<public-host>/api/github/callback`, a webhook at `/api/github/webhook`, user email read access, selected-repository content read access, push webhook events, a webhook secret and a private key. Restrict the installation to selected repositories. Confirm permission details against the [GitHub App documentation](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
 
-Use `ARENA_SECURE_COOKIE=1`, exact `ARENA_ORIGINS`, `ARENA_PUBLIC_URL`, and GitHub configuration listed in `.env.example`. The API is stateful today: do not run it as a Vercel Function with local SQLite or local bot files and expect persistence. Vercel frontend hosting is compatible with the proposed API split, but no production rewrite or deployed project has been configured.
+Use `ARENA_SECURE_COOKIE=1`, exact `ARENA_ORIGINS`, `ARENA_PUBLIC_URL`, and GitHub configuration listed in `.env.example`. The API is stateful today: do not run it as a Vercel Function with local SQLite or local bot files and expect persistence. `frontend/vercel.mjs` requires `ARENA_API_ORIGIN` to be a bare HTTPS origin and routes `/api/*` to it; deployment intentionally fails closed until the real API exists. A local Vercel preview build was tested with a nonfunctional example origin, and its build output was removed so it cannot be deployed accidentally.
+
+After the API is deployed, configure `ARENA_API_ORIGIN` in the build environment to its verified HTTPS origin, rebuild and test a preview using the named project and team. Verify authentication cookies, GitHub callbacks, practice and the largest permitted upload through the rewrite before promoting. Do not deploy a build generated with an example or local-only origin.
 
 ## Required engineering before launch
 
@@ -53,5 +57,6 @@ Use `ARENA_SECURE_COOKIE=1`, exact `ARENA_ORIGINS`, `ARENA_PUBLIC_URL`, and GitH
 - Complete GitHub setup/connection UI and verify real GitHub App installation, login and webhook end to end.
 - Migrate persistence and job queues before running API and workers on separate hosts.
 - Add authentication/abuse limits around submissions and webhooks, instance isolation, observability, backup/restore and full end-to-end tests.
-- Model projects currently run Python standard-library CPU inference only, with a 16 MiB project limit. GPU workers, package images and large model artifacts are not implemented.
+- Verify 16 MiB model uploads through the actual Vercel-to-API rewrite before advertising that limit. Vercel Functions have a 4.5 MB body limit; the proposed path is an external rewrite rather than a Function, so its upload behavior must be tested rather than assumed.
+- Model projects currently run Python and NumPy CPU inference only, with a 16 MiB project limit. GPU workers, package images and large model artifacts are not implemented.
 - Budget controls and approval for AWS resource creation must be decided before provisioning; this document is not a deployment.

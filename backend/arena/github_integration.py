@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -27,11 +28,12 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from . import db
-from .security import current_user, digest_token, hash_password, new_session, require_team
+from .security import current_user, digest_token, hash_password, new_session, rate_limit, require_team
 
 router = APIRouter(prefix='/api/github', tags=['github'])
 API = 'https://api.github.com'
 SHA = re.compile(r'^[0-9a-f]{40}$')
+GITHUB_INSTALL_URL = re.compile(r'^https://github\.com/apps/[A-Za-z0-9_-]+/installations/new$')
 
 
 def config(name: str) -> str:
@@ -42,7 +44,7 @@ def config(name: str) -> str:
 
 
 def request_json(url: str, *, token: str | None = None, data: dict | None = None, max_bytes: int = 300_000) -> dict:
-    headers = {'Accept': 'application/json', 'User-Agent': 'CampusArena',
+    headers = {'Accept': 'application/json', 'User-Agent': 'StackTheory',
                'X-GitHub-Api-Version': '2022-11-28'}
     if token:
         headers['Authorization'] = 'Bearer ' + token
@@ -90,6 +92,22 @@ def _set_session(response, token):
                         samesite='lax', max_age=604800, path='/')
 
 
+@router.get('/config')
+def github_config():
+    """Expose only capability state and a strictly validated public install URL."""
+    required = ('ARENA_GITHUB_CLIENT_ID', 'ARENA_GITHUB_CLIENT_SECRET',
+                'ARENA_GITHUB_CALLBACK_URL', 'ARENA_GITHUB_APP_ID',
+                'ARENA_GITHUB_PRIVATE_KEY_PATH', 'ARENA_GITHUB_WEBHOOK_SECRET')
+    configured = all(os.environ.get(name, '').strip() for name in required)
+    key_path = os.environ.get('ARENA_GITHUB_PRIVATE_KEY_PATH', '').strip()
+    configured = bool(configured and os.path.isfile(key_path) and os.access(key_path, os.R_OK)
+                      and shutil.which('openssl'))
+    install_url = os.environ.get('ARENA_GITHUB_INSTALL_URL', '').strip()
+    if not GITHUB_INSTALL_URL.fullmatch(install_url):
+        install_url = None
+    return {'configured': configured, 'install_url': install_url}
+
+
 @router.get('/login')
 def login_start(request: Request):
     return _start(request, None)
@@ -117,17 +135,25 @@ class ConnectRepository(BaseModel):
     repository_id: int = Field(gt=0)
     branch: str = Field(min_length=1, max_length=200, pattern=r'^[A-Za-z0-9._/-]+$')
     track: str = Field(default='classic', pattern=r'^(classic|model)$')
+    game: str = Field(default='poker', max_length=20)
 
 
 @router.post('/connect')
 def connect_start(body: ConnectRepository, request: Request, response: Response):
+    from .games import GameError, get_game
+
     user = require_team(request)
     if not user['email_verified']:
         raise HTTPException(403, 'Verify your email before connecting a repository.')
+    try:
+        get_game(body.game)
+    except GameError as exc:
+        raise HTTPException(422, str(exc)) from None
     if '..' in body.branch or body.branch.startswith('/') or body.branch.endswith('/'):
         raise HTTPException(422, 'Invalid branch name.')
     url, state = _authorization_url(request, {'installation_id': body.installation_id,
-            'repository_id': body.repository_id, 'branch': body.branch, 'track': body.track}, user)
+            'repository_id': body.repository_id, 'branch': body.branch, 'track': body.track,
+            'game': body.game}, user)
     _state_cookie(response, state)
     return {'url': url}
 
@@ -229,8 +255,12 @@ def callback(request: Request, code: str = '', state: str = ''):
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', name):
             raise HTTPException(400, 'Invalid repository name from GitHub.')
         with db.connect(True) as c:
-            c.execute('INSERT OR IGNORE INTO github_repositories(id,team_id,installation_id,repository_id,full_name,branch,created_at,track) VALUES(?,?,?,?,?,?,?,?)',
-                      (uuid.uuid4().hex, user['team_id'], payload['installation_id'], payload['repository_id'], name, payload['branch'], time.time(), payload.get('track', 'classic')))
+            c.execute('''INSERT OR IGNORE INTO github_repositories(id,team_id,installation_id,
+                         repository_id,full_name,branch,created_at,track,game_id)
+                         VALUES(?,?,?,?,?,?,?,?,?)''',
+                      (uuid.uuid4().hex, user['team_id'], payload['installation_id'], payload['repository_id'],
+                       name, payload['branch'], time.time(), payload.get('track', 'classic'),
+                       payload.get('game', 'poker')))
         response = RedirectResponse('/workshop?github=connected', status_code=303)
         response.delete_cookie('arena_github_state', path='/api/github/callback')
         return response
@@ -271,8 +301,8 @@ def callback(request: Request, code: str = '', state: str = ''):
 def repositories(request: Request):
     user = require_team(request)
     with db.connect() as c:
-        rows = c.execute('SELECT id,full_name,branch,track,repository_id,installation_id,created_at FROM github_repositories WHERE team_id=? ORDER BY created_at DESC', (user['team_id'],)).fetchall()
-    return {'repositories': [dict(r) for r in rows]}
+        rows = c.execute('SELECT id,full_name,branch,track,repository_id,installation_id,created_at,game_id FROM github_repositories WHERE team_id=? ORDER BY created_at DESC', (user['team_id'],)).fetchall()
+    return {'repositories': [{**dict(r), 'game': r['game_id']} for r in rows]}
 
 
 @router.get('/jobs')
@@ -295,6 +325,7 @@ def validation_jobs(request: Request):
 @router.post('/repositories/{connection_id}/sync', status_code=202)
 def sync_repository(connection_id: str, request: Request):
     user = require_team(request)
+    rate_limit('github-sync:' + user['team_id'], 20, 3600)
     with db.connect() as c:
         row = c.execute('SELECT * FROM github_repositories WHERE id=? AND team_id=?',
                         (connection_id, user['team_id'])).fetchone()
@@ -309,8 +340,11 @@ def sync_repository(connection_id: str, request: Request):
     job_id = uuid.uuid4().hex
     payload = {'connection_id': row['id'], 'team_id': row['team_id'], 'repository_id': row['repository_id'],
                'installation_id': row['installation_id'], 'full_name': row['full_name'], 'branch': row['branch'],
-               'commit_sha': sha, 'delivery_id': 'manual-' + job_id, 'track': row['track']}
+               'commit_sha': sha, 'delivery_id': 'manual-' + job_id, 'track': row['track'],
+               'game_id': row['game_id']}
     with db.connect(True) as c:
+        if c.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('running','queued')").fetchone()[0] >= 20:
+            raise HTTPException(429, 'The validation queue is full. Try again later.')
         # The repository may have been disconnected during the GitHub request.
         updated = c.execute('UPDATE github_repositories SET latest_job_id=? WHERE id=? AND team_id=?',
                             (job_id, connection_id, user['team_id'])).rowcount
@@ -372,7 +406,8 @@ async def webhook(request: Request):
             job_id = uuid.uuid4().hex
             payload = {'connection_id': row['id'], 'team_id': row['team_id'], 'repository_id': repo_id,
                        'installation_id': install_id, 'full_name': row['full_name'], 'branch': branch,
-                       'commit_sha': sha, 'delivery_id': delivery, 'track': row['track']}
+                       'commit_sha': sha, 'delivery_id': delivery, 'track': row['track'],
+                       'game_id': row['game_id']}
             c.execute('INSERT INTO jobs(id,kind,status,team_id,created_at,payload) VALUES(?,?,?,?,?,?)',
                       (job_id, 'github_validation', 'queued', row['team_id'], time.time(), json.dumps(payload)))
             c.execute('UPDATE github_repositories SET latest_job_id=? WHERE id=?', (job_id, row['id']))

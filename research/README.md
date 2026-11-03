@@ -2,7 +2,7 @@
 
 Original papers (downloaded from open repositories: arXiv, PMLR, NeurIPS
 proceedings, AAAI CDN), the synthesis of what they teach, and the modeling
-guide that turns the theory into Campus Arena features.
+guide that turns the theory into Stack Theory features.
 
 | File | What it is |
 |---|---|

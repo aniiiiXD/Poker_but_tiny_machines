@@ -1,1 +1,1 @@
-"""Campus Arena backend."""
+"""Stack Theory backend."""
