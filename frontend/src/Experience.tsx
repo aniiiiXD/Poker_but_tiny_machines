@@ -3,7 +3,6 @@ import { useData, post, type Data } from "./api";
 import { gameName } from "./games";
 import { A, fmtDay, Status } from "./ui";
 import { Replay } from "./Replay";
-import { EquityPanel } from "./EquityPanel";
 
 function acceptingEntries(event: Data) {
   return !event.exhibition && ["registration", "building"].includes(event.status) &&
@@ -304,9 +303,86 @@ function StandingsPeek() {
   );
 }
 
-export function ArenaHome() {
-  const starter = useData("/starter");
+/** Six-game icon wall — the hero's right stage. Every tile opens its game. */
+const GAME_ICONS: Record<string, React.ReactElement> = {
+  poker: (
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <rect x="8" y="6" width="20" height="30" rx="3" className="gi-line" />
+      <path d="M18 16c-2.6-3-6-1.4-6 1.4 0 2.2 3.2 4.6 6 6.6 2.8-2 6-4.4 6-6.6 0-2.8-3.4-4.4-6-1.4Z" className="gi-fill" />
+      <rect x="22" y="12" width="18" height="28" rx="3" className="gi-line" />
+      <path d="M31 22c-2.2-2.5-5-1.2-5 1.2 0 1.8 2.7 3.8 5 5.5 2.3-1.7 5-3.7 5-5.5 0-2.4-2.8-3.7-5-1.2Z" className="gi-fill" />
+    </svg>
+  ),
+  bluff: (
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <rect x="7" y="10" width="20" height="28" rx="3" className="gi-line" />
+      <rect x="21" y="10" width="20" height="28" rx="3" className="gi-line" />
+      <text x="31" y="30" textAnchor="middle" className="gi-mark">?</text>
+    </svg>
+  ),
+  uno: (
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <rect x="6" y="14" width="14" height="22" rx="3" className="gi-line" />
+      <rect x="17" y="10" width="14" height="22" rx="3" className="gi-line" />
+      <rect x="28" y="14" width="14" height="22" rx="3" className="gi-line" />
+      <circle cx="24" cy="21" r="4" className="gi-fill" />
+    </svg>
+  ),
+  hearts: (
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <path d="M24 40C14 32 6 26 6 17.5 6 11.6 10.8 8 15.4 8c3.4 0 6.6 1.8 8.6 4.8C26 9.8 29.2 8 32.6 8 37.2 8 42 11.6 42 17.5 42 26 34 32 24 40Z" className="gi-fill" />
+    </svg>
+  ),
+  rummy: (
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <rect x="6" y="8" width="16" height="14" rx="2" className="gi-line" />
+      <rect x="26" y="8" width="16" height="14" rx="2" className="gi-line" />
+      <rect x="6" y="26" width="16" height="14" rx="2" className="gi-line" />
+      <rect x="26" y="26" width="16" height="14" rx="2" className="gi-line" />
+      <path d="M10 15l3 3 5-6" className="gi-stroke" />
+    </svg>
+  ),
+  hexchange: (
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <path d="M24 4l14 8v16l-14 8-14-8V12l14-8Z" className="gi-line" />
+      <path d="M18 20h12M24 16v8" className="gi-stroke" />
+      <circle cx="24" cy="30" r="3" className="gi-fill" />
+    </svg>
+  ),
+};
+
+const GAME_TILES: { id: string; name: string; tag: string }[] = [
+  { id: "poker", name: "Poker", tag: "no-limit hold'em" },
+  { id: "bluff", name: "Bluff", tag: "i doubt it" },
+  { id: "uno", name: "Uno", tag: "prototype" },
+  { id: "hearts", name: "Hearts", tag: "trick avoidance" },
+  { id: "rummy", name: "Rummy", tag: "13-card melds" },
+  { id: "hexchange", name: "Hexchange", tag: "trading island" },
+];
+
+function HeroGameWall() {
+  const { data } = useData("/games");
+  const games = data?.games ?? GAME_TILES.map((t) => ({ id: t.id, name: t.name }));
   return (
+    <div className="hero-gamegrid" aria-label="The six games">
+      {GAME_TILES.map((tile) => {
+        const live = games.some((g: Data) => g.id === tile.id);
+        return (
+          <A key={tile.id} to={`/workshop?game=${tile.id}`} className={"hero-tile" + (live ? "" : " soon")}>
+            <span className="gi" aria-hidden="true">
+              {GAME_ICONS[tile.id]}
+            </span>
+            <b>{tile.name}</b>
+            <small>{live ? tile.tag : "coming soon"}</small>
+          </A>
+        );
+      })}
+    </div>
+  );
+}
+
+export function ArenaHome() {
+  const starter = useData("/starter");  return (
     <main className="exp-home">
       <section className="hero" aria-labelledby="hero-title">
         <div className="wrap hero-grid">
@@ -337,7 +413,7 @@ export function ArenaHome() {
             </div>
           </div>
           <div className="hero-stage">
-            <EquityPanel />
+            <HeroGameWall />
           </div>
         </div>
         <StatStrip />
