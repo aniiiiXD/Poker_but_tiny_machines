@@ -1,0 +1,8 @@
+{
+  "bias": 1.2,
+  "points": 0.10,
+  "rank_mates": 1.6,
+  "suit_neighbors": 1.4,
+  "joker": 6.0,
+  "take_threshold": 3.0
+}

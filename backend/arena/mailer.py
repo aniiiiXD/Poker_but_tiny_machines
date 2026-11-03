@@ -12,7 +12,6 @@ import os
 import smtplib
 import time
 from email.message import EmailMessage
-from pathlib import Path
 
 from . import db
 

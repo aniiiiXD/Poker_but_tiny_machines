@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import logging
 import math
 import random
@@ -9,6 +9,7 @@ import secrets
 import threading
 import time
 import uuid
+
 from . import db
 from .baselines import make_baselines
 from .engine import play_table
@@ -37,12 +38,16 @@ BLUFF_PUBLIC_SUMMARY_FIELDS = frozenset({
     "hands", "matches", "decisions", "final_rank", "names",
 })
 
+# Public summary fields shared by every non-poker game. Privileged audit
+# payloads (`log`, duplicate envelopes) never enter a stored replay summary.
+GAME_PUBLIC_SUMMARY_FIELDS = BLUFF_PUBLIC_SUMMARY_FIELDS | {"final_action", "match_points"}
+
 
 def public_replay_summary(summary, game_id):
     """Filter stored legacy replays as well as newly created ones."""
-    if game_id == "bluff":
-        return {key: value for key, value in summary.items() if key in BLUFF_PUBLIC_SUMMARY_FIELDS}
-    return summary
+    if game_id == "poker":
+        return summary
+    return {key: value for key, value in summary.items() if key in GAME_PUBLIC_SUMMARY_FIELDS}
 
 
 def insert_replay(c, title, result, source, owner_id=None, team_id=None, game_id="poker"):
@@ -223,7 +228,7 @@ def _practice_game(job, payload, game_id):
 
     spec = get_game(game_id)
     adapter = spec.adapter
-    seats = spec.seats[0]
+    seats = spec.seats[-1]
     bots = adapter.make_baselines(seats, seed=payload["seed"])
     sandbox_bot = None
     try:
@@ -251,7 +256,7 @@ def _practice_game(job, payload, game_id):
                     capture=index == 0,
                 )
                 played += 1
-                points = [p + r for p, r in zip(points, result["points"])]
+                points = [p + r for p, r in zip(points, adapter.match_scores(result))]
                 faults = [f + r for f, r in zip(faults, result["faults"])]
                 errors = [e or err for e, err in zip(errors, result["errors"])]
                 if index == 0:
@@ -560,7 +565,7 @@ def _score_round_game(job, payload):
     game_id = payload["game_id"]
     spec = get_game(game_id, payload.get("rules_version"))
     adapter = spec.adapter
-    seats = spec.seats[0]
+    seats = spec.seats[-1]
     # Preflight: a disrupted round is retried, never scored with dead sandboxes.
     status = sandbox_status()
     if not status["available"] or not status["image"]:
@@ -634,8 +639,8 @@ def _score_round_game(job, payload):
             for index, (team, scoring) in enumerate(seat_plan):
                 if scoring and team is not None:
                     total = totals[team["id"]]
-                    total["points"] += result["points"][index]
-                    total["points_sq"] += result["points"][index] ** 2
+                    total["points"] += adapter.match_scores(result)[index]
+                    total["points_sq"] += adapter.match_scores(result)[index] ** 2
                     total["tables"] += 1
                     total["faults"] += result["faults"][index]
             if result["frames"]:
@@ -831,7 +836,7 @@ def execute_loop(index: int):
             log.info("%s claimed job %s (%s)", name, job["id"], job["kind"])
             try:
                 _run_claimed(job)
-            except Exception as exc:
+            except Exception:
                 log.exception("Job %s failed", job["id"])
         except Exception:
             log.exception("%s crashed on the loop itself", name)
@@ -927,7 +932,7 @@ def main():
         try:
             _run_claimed(job)
             log.info("Job %s completed", job["id"])
-        except Exception as exc:
+        except Exception:
             log.exception("Job %s failed", job["id"])
             raise SystemExit(1)
         return

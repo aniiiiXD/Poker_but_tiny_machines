@@ -1,0 +1,12 @@
+{
+  "pass_bias": -0.4,
+  "pass_rank_weight": 0.16,
+  "pass_heart_weight": 1.1,
+  "pass_queen_weight": 3.0,
+  "cost_bias": -0.2,
+  "cost_rank_weight": 0.14,
+  "cost_heart_weight": 1.2,
+  "cost_queen_weight": 2.8,
+  "cost_win_weight": 0.9,
+  "cost_trick_points_weight": 0.55
+}

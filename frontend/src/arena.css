@@ -365,6 +365,11 @@ a.row-item:hover { background: var(--bone-2); }
   letter-spacing: 0.1em; font-size: 14px; color: var(--muted);
 }
 .row-item .meta strong { color: var(--ink); font-weight: 700; }
+.game-badge {
+  font-family: var(--condensed); font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.08em; font-size: 12.5px; color: var(--muted);
+  border: 1px solid var(--line); padding: 3px 8px; white-space: nowrap;
+}
 .status-line {
   font-family: var(--condensed); font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.1em; font-size: 14px; color: var(--ink);

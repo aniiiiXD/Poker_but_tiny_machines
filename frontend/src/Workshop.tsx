@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, post, useData, type Data } from "./api";
+import { gameName } from "./games";
 import { A, Button, Notice, Page } from "./ui";
 import { SubmissionSources } from "./SubmissionSources";
 
@@ -227,7 +228,9 @@ export function Workshop({ me }: { me: Data | null }) {
             <p className="muted" style={{ marginTop: 6 }}>
               {isBluff
                 ? "Play one full Bluff match against three built-in strategies and inspect every decision in the replay."
-                : "Run 20 hands and inspect every decision in the replay."}
+                : game === "poker"
+                  ? "Run 20 hands and inspect every decision in the replay."
+                  : "Run a practice game against built-in strategies and inspect every decision in the replay."}
             </p>
             <div className="stack" style={{ marginTop: 14 }}>
               <Button
@@ -284,7 +287,7 @@ export function Workshop({ me }: { me: Data | null }) {
                     <p className="fault-note">
                       Faults include errors, timeouts, and illegal actions; the
                       engine falls back to a legal{" "}
-                      {isBluff ? "play or pass" : "check or fold"}.
+                      {game === "poker" ? "check or fold" : "play or pass"}.
                     </p>
                     <A className="text-button" to={"/replays/" + job.result.replay_id}>
                       Open replay →
@@ -344,7 +347,7 @@ export function Workshop({ me }: { me: Data | null }) {
               </div>
             ) : (
               <p className="muted" style={{ marginTop: 6 }}>
-                No {isBluff ? "Bluff" : "Poker"} submissions yet.
+                No {gameName(game)} submissions yet.
               </p>
             )}
           </div>

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import random
 
-from .engine import RANKS, SUITS, sort_key
+from .engine import sort_key
 
 
 class BluffBaseline:

@@ -124,6 +124,39 @@ def receive(channel, deadline):
 def valid_action(result, protocol="poker"):
     if type(result) is not dict:
         return False
+    if protocol == "uno":
+        kind = result.get("type")
+        if kind in ("draw", "pass", "uno", "challenge"):
+            return True
+        return kind == "play" and type(result.get("card")) is str and 0 < len(result["card"]) <= 8
+    if protocol == "hearts":
+        kind = result.get("type")
+        if kind == "play":
+            card = result.get("card")
+            return type(card) is str and len(card) == 2 and card[0] in "cdhs"
+        if kind == "pass":
+            cards = result.get("cards")
+            return (type(cards) is list and len(cards) == 3 and
+                    all(type(c) is str and len(c) == 2 and c[0] in "cdhs" and c[1] in "cdhs" for c in cards))
+        return False
+    if protocol == "rummy":
+        kind = result.get("type")
+        if kind == "draw":
+            return result.get("from") in ("stock", "discard")
+        if kind == "discard":
+            card = result.get("card")
+            return type(card) is str and 0 < len(card) <= 4
+        if kind == "declare":
+            hand = result.get("hand")
+            return (type(hand) is list and 0 < len(hand) <= 32 and
+                    all(type(c) is str and 0 < len(c) <= 4 for c in hand))
+        return kind == "pass"
+    if protocol == "hexchange":
+        return (type(result) is dict and
+                result.get("type") in ("build_road", "build_settlement", "build_city",
+                                       "buy_dev", "play_dev", "bank_trade", "offer",
+                                       "accept", "reject", "counter", "move_robber",
+                                       "setup_settlement", "setup_road", "end_turn", "pass"))
     if protocol == "bluff":
         kind = result.get("type")
         if kind in ("challenge", "pass"):
@@ -145,8 +178,28 @@ def valid_action(result, protocol="poker"):
 
 def clean_result(result, protocol="poker"):
     """Rebuild the reply from allow-listed fields only."""
+    if protocol == "uno":
+        kind = result["type"]
+        return {"type": kind, "card": result["card"]} if kind == "play" else {"type": kind}
+    if protocol == "hearts":
+        kind = result["type"]
+        if kind == "play":
+            return {"type": "play", "card": result["card"]}
+        return {"type": "pass", "cards": list(result["cards"])}
+    if protocol == "rummy":
+        kind = result["type"]
+        if kind == "draw":
+            return {"type": "draw", "from": result["from"]}
+        if kind == "discard":
+            return {"type": "discard", "card": result["card"]}
+        if kind == "declare":
+            return {"type": "declare", "hand": list(result["hand"])}
+        return {"type": "pass"}
+    if protocol == "hexchange":
+        # Engine deep-validates; keep the bounded dict as-is (MAX_RESPONSE caps size).
+        return dict(result)
     if protocol == "bluff":
-        kind = result.get("type")
+        kind = result["type"]
         if kind == "play":
             return {"type": "play", "cards": list(result["cards"])}
         return {"type": kind}
@@ -206,7 +259,7 @@ def main():
         except (ValueError, OSError, UnicodeError, zipfile.BadZipFile):
             fatal('Invalid model project archive')
     protocol = config.get("protocol", "poker")
-    if protocol not in ("poker", "bluff"):
+    if protocol not in ("poker", "bluff", "uno", "hearts", "rummy", "hexchange"):
         fatal("Unsupported protocol")
     milliseconds = config.get("decision_ms")
     if not isinstance(source, str) or len(source.encode()) > MAX_SOURCE:

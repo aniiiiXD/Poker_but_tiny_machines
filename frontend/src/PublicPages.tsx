@@ -1,6 +1,53 @@
 import { useEffect, useState } from "react";
 import { post, useData, type Data } from "./api";
+import { gameCapLabel, gameName, gameUnit, unitCount } from "./games";
 import { A, Button, Notice, Page, Status, fmtDay, fmtLong } from "./ui";
+
+/** Friendly labels for keys in the detail endpoint's game rules object. */
+const RULE_LABELS: Record<string, string> = {
+  language: "Language",
+  source_limit_bytes: "Source limit",
+  project_limit_bytes: "Project limit",
+  submission_cooldown_seconds: "Submission cooldown",
+  initial_chips: "Starting chips",
+  blinds: "Blinds",
+  payouts: "Payouts",
+  scoring: "Scoring",
+  tie_policy: "Ties",
+  network_access: "Network access",
+  decision_cap: "Decision cap",
+  rank_cycle: "Rank cycle",
+  matches: "Matches",
+};
+// Already shown as event facts, or internal bookkeeping.
+const RULE_SKIP = new Set(["track", "game", "game_id", "rules_version", "decision_ms", "sandbox_digest"]);
+
+function formatBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${Math.round(n / (1024 * 1024))} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+/** Turn the game-specific rules object into fact rows. Keys may be absent; unknown keys render with a humanized label. */
+function ruleRows(rules: Data | undefined): [string, string][] {
+  if (!rules || typeof rules !== "object" || Array.isArray(rules)) return [];
+  const rows: [string, string][] = [];
+  for (const [key, value] of Object.entries(rules)) {
+    if (RULE_SKIP.has(key) || value === null || value === undefined || value === "") continue;
+    if (typeof value === "boolean") rows.push([RULE_LABELS[key] ?? humanize(key), value ? "Yes" : "No"]);
+    else if (typeof value === "number")
+      rows.push([RULE_LABELS[key] ?? humanize(key), key.endsWith("_bytes") ? formatBytes(value) : String(value)]);
+    else if (Array.isArray(value) && value.every((v) => typeof v !== "object"))
+      rows.push([RULE_LABELS[key] ?? humanize(key), value.map(String).join(", ")]);
+    else if (typeof value === "string") rows.push([RULE_LABELS[key] ?? humanize(key), value]);
+  }
+  return rows;
+}
+
+function humanize(key: string): string {
+  const words = key.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 export function Events() {
   const { data, error } = useData("/events");
@@ -29,6 +76,7 @@ export function Events() {
                   {e.description}
                 </p>
               </span>
+              {e.variant && <span className="game-badge">{e.variant}</span>}
               <Status text={e.exhibition ? "Exhibition" : e.status} done={["completed", "closed"].includes(e.status)} />
               <span className="meta">
                 {fmtDay(e.build_starts_at)} · {e.entry_count} teams · {e.round_count} rounds
@@ -75,21 +123,28 @@ export function EventDetail({
       </Page>
     );
   const e = data.event;
+  const gameId = e.game || e.game_id || "poker";
+  const unit = gameUnit(gameId);
   const closed = e.exhibition || ["completed", "closed"].includes(e.status);
   const canJoin = ["registration", "building"].includes(e.status) &&
     new Date(e.build_ends_at).getTime() > Date.now();
+  const capCopy =
+    e.max_hands !== undefined && e.max_hands !== null
+      ? ` Each table plays at most ${e.max_hands} ${unit}.`
+      : "";
   const facts: [string, string][] = [
     ["Build starts", fmtLong(e.build_starts_at)],
     ["Build ends", fmtLong(e.build_ends_at)],
     ["Round interval", Math.round(e.round_interval_seconds / 60) + " min"],
-    ["Maximum hands", String(e.max_hands)],
-    ["Game", e.variant],
+    [gameCapLabel(gameId), String(e.max_hands)],
+    ["Game", e.variant || gameName(gameId)],
     ["Bot track", e.track === "model" ? "Model project" : "Classic bot"],
     ["Rounds", String(e.round_count)],
     ["Decision time", e.decision_ms + " ms"],
     ["Tables per round", String(e.tables_per_round)],
     ["Partner", e.sponsor_name || "Open to partners"],
   ];
+  const rules = ruleRows(data.rules);
   return (
     <Page title={e.title} lead={e.description} eyebrow="Event">
       <div className="grid-2">
@@ -106,7 +161,7 @@ export function EventDetail({
             <p className="muted">
               {closed
                 ? "Registration has ended. Check the schedule for the next event."
-                : `Join with your team, then submit a bot before the round begins. Each table plays at most ${e.max_hands} hands.`}
+                : `Join with your team, then submit a bot before the round begins.${capCopy}`}
             </p>
             <div style={{ marginTop: 18 }}>
               <Button
@@ -158,7 +213,7 @@ export function EventDetail({
           <h2 className="display-2" style={{ margin: "40px 0 16px" }}>
             Leaderboard
           </h2>
-          <LeaderboardTable rows={data.leaderboard} />
+          <LeaderboardTable rows={data.leaderboard} game={gameId} />
         </div>
 
         <aside className="panel facts">
@@ -174,13 +229,24 @@ export function EventDetail({
               <b>{value}</b>
             </p>
           ))}
+          {rules.length > 0 && (
+            <>
+              <h3 style={{ margin: "22px 0 4px" }}>Game rules</h3>
+              {rules.map(([label, value]) => (
+                <p className="fact" key={label}>
+                  <span>{label}</span>
+                  <b>{value}</b>
+                </p>
+              ))}
+            </>
+          )}
         </aside>
       </div>
     </Page>
   );
 }
 
-export function LeaderboardTable({ rows }: { rows: Data[] }) {
+export function LeaderboardTable({ rows, game }: { rows: Data[]; game?: string }) {
   return rows?.length ? (
     <div className="table-wrap">
       <table>
@@ -208,21 +274,54 @@ export function LeaderboardTable({ rows }: { rows: Data[] }) {
       </table>
     </div>
   ) : (
-    <div className="empty">No scores yet. Results will appear after a round.</div>
+    <div className="empty">
+      {game && game !== "poker"
+        ? `No ${gameName(game)} rounds scored yet. The floor is open.`
+        : "No scores yet. Results will appear after a round."}
+    </div>
   );
 }
 
 export function Leaderboard() {
-  const { data, error } = useData("/leaderboard");
+  const games = useData("/games");
+  const [game, setGame] = useState(
+    () => new URLSearchParams(location.search).get("game") || "poker",
+  );
+  useEffect(() => {
+    const url = new URL(location.href);
+    url.searchParams.set("game", game);
+    history.replaceState(null, "", url);
+  }, [game]);
+  const { data, error } = useData(`/leaderboard?game=${game}`);
+  const tabs = games.data?.games ?? [];
   return (
     <Page
       title="The standings"
-      lead="Mean points per table, weighted by round. Equal totals share a rank."
+      lead={
+        game === "poker"
+          ? "Mean points per table, weighted by round. Equal totals share a rank."
+          : "Updated as rounds complete. Equal totals share a rank."
+      }
       eyebrow="Standings"
     >
+      {tabs.length > 0 && (
+        <div className="game-tabs" role="tablist" aria-label="Game">
+          {tabs.map((g: Data) => (
+            <button
+              key={g.id}
+              role="tab"
+              aria-selected={game === g.id}
+              className={"game-tab" + (game === g.id ? " on" : "")}
+              onClick={() => setGame(g.id)}
+            >
+              {g.name || gameName(g.id)}
+            </button>
+          ))}
+        </div>
+      )}
       <Notice error={error} />
       {data ? (
-        <LeaderboardTable rows={data.leaderboard} />
+        <LeaderboardTable rows={data.leaderboard} game={game} />
       ) : (
         !error && <p role="status">Loading standings…</p>
       )}
@@ -235,8 +334,8 @@ export function Replays() {
   const replays = data?.replays ?? [];
   return (
     <Page
-      title="Watch the hands unfold"
-      lead="Replay completed games, one decision at a time."
+      title="Watch the games unfold"
+      lead="Replay a completed game, one decision at a time."
       eyebrow="Replays"
     >
       <Notice error={error} />
@@ -258,7 +357,7 @@ export function Replays() {
               </span>
               <Status text={r.source} done={r.source === "practice"} />
               <span className="meta">
-                {r.hand_count} {r.game === "bluff" ? "match" : "hands"} · {fmtDay(r.created_at)}
+                {unitCount(r.hand_count, r.game)} · {fmtDay(r.created_at)}
               </span>
             </A>
           ))}

@@ -12,15 +12,16 @@ import sqlite3
 import time
 import zipfile
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
+
 from . import db, mailer, worker
 from .games import GameError, get_game, list_games
-from .sandbox import MODEL_IMAGE, sandbox_status, image_id
+from .sandbox import MODEL_IMAGE, image_id, sandbox_status
 from .security import (
     COOKIE,
     current_user,
@@ -33,7 +34,6 @@ from .security import (
     require_user,
     verify_password,
 )
-import secrets
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_ORIGINS = set(
@@ -47,7 +47,7 @@ SECURE_COOKIE = os.environ.get("ARENA_SECURE_COOKIE") == "1"
 
 
 def iso(value):
-    return datetime.fromtimestamp(value, timezone.utc).isoformat() if value is not None else None
+    return datetime.fromtimestamp(value, UTC).isoformat() if value is not None else None
 
 
 @asynccontextmanager
@@ -67,8 +67,10 @@ async def lifespan(app):
 
 app = FastAPI(title="Stack Theory", version="0.1.0", lifespan=lifespan)
 from .github_integration import router as github_router
+
 app.include_router(github_router)
 from .model_projects import router as model_router
+
 app.include_router(model_router)
 
 

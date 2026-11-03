@@ -1,15 +1,14 @@
 """Multi-game foundation + Bluff vertical slice: API, activation, rounds."""
+import io
 import json
 import time
 import zipfile
-import io
 
 import pytest
 from fastapi.testclient import TestClient
 
 from arena import db, worker
-from arena.app import app, leaderboard
-
+from arena.app import app
 
 BLUFF_SOURCE = (db.DATA.parent / "starter-bluff" / "agent.py").read_text()
 POKER_SOURCE = (db.DATA.parent / "starter-kit" / "agent.py").read_text()
@@ -43,7 +42,7 @@ def make_team(client, name="T1"):
 
 def test_games_endpoint_lists_only_implemented_games(client):
     games = {g["id"]: g for g in client.get("/api/games").json()["games"]}
-    assert set(games) == {"poker", "bluff"}
+    assert set(games) == {"poker", "bluff", "uno", "hearts", "rummy", "hexchange"}
     assert games["bluff"]["rules_version"] == 1
     assert games["bluff"]["seats"] == [4]
     assert "classic" in games["bluff"]["tracks"] and "model" in games["bluff"]["tracks"]
@@ -380,6 +379,7 @@ def test_live_bluff_sandbox_validation(tmp_path, monkeypatch):
 @pytest.mark.parametrize('track', ['classic', 'model'])
 def test_live_bluff_submission_practice_and_round(client, monkeypatch, track):
     from pathlib import Path
+
     from arena.games import get_game
     from arena.sandbox import MODEL_IMAGE, image_id, sandbox_status
 
@@ -431,3 +431,87 @@ def test_live_bluff_submission_practice_and_round(client, monkeypatch, track):
     with db.connect() as c:
         score = c.execute('SELECT * FROM round_scores WHERE round_id=?', (scored['round_id'],)).fetchone()
     assert score['submission_id'] == submission_id and score['faults'] == 0
+
+
+def test_games_catalog_has_six_implemented_games(client):
+    games = {g["id"]: g for g in client.get("/api/games").json()["games"]}
+    assert set(games) == {"poker", "bluff", "uno", "hearts", "rummy", "hexchange"}
+    assert games["uno"]["seats"] == [2, 3, 4]
+    assert games["hearts"]["seats"] == [4]
+    assert games["rummy"]["seats"] == [2, 3, 4, 5, 6]
+    assert games["hexchange"]["seats"] == [3, 4]
+
+
+@pytest.mark.parametrize("game,seats", [("uno", 4), ("hearts", 4), ("rummy", 6), ("hexchange", 4)])
+def test_new_game_practice_baseline_demo_runs_and_stays_public(client, game, seats):
+    """Baseline practice needs no Docker (pure-Python engines) and must never
+    leak the privileged log through the replay summary."""
+    make_team(client)
+    job_id = client.post("/api/practice", json={"game": game, "matches": 1}).json()["job_id"]
+    with db.connect() as c:
+        job = dict(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+    result = worker.practice(job)
+    assert result["game"] == game and result["matches"] == 1
+    assert len(result["scores"]) == seats
+    assert any(score["points"] > 0 for score in result["scores"])
+    assert all(score["faults"] == 0 for score in result["scores"])  # baselines never fault
+    detail = client.get(f"/api/replays/{result['replay_id']}").json()
+    assert detail["game"] == game
+    summary = detail["summary"]
+    assert "log" not in summary, "privileged audit log leaked into the public summary"
+    assert "replay" not in summary
+    frames = detail["frames"]
+    assert frames["game"] == game and frames["protocol"] == 1
+
+
+def test_round_scorer_uses_match_points_for_hearts(client, monkeypatch):
+    """Hearts' native `points` are penalties (low is good); standings must use
+    `match_points` (win = 1). A high-penalty winner scores 1, not their penalty."""
+    make_team(client, name="Solo")
+    now = time.time()
+    with db.connect(True) as c:
+        team_id = c.execute("SELECT team_id FROM users WHERE name='Solo'").fetchone()[0]
+        c.execute("""INSERT INTO events(id,title,description,status,variant,build_starts_at,
+            build_ends_at,round_interval_seconds,round_count,tables_per_round,max_hands,
+            decision_ms,sponsor_name,exhibition,sandbox_digest,game_id,rules_version)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ('hearts-ev', 'Hearts open', 'Hearts event', 'building', 'Hearts v1', now - 10, now - 1,
+             60, 1, 1, 1, 1.0, None, 0, None, 'hearts', 1))
+        c.execute("INSERT INTO entries VALUES(?,?,?)", ('hearts-ev', team_id, now))
+        c.execute("INSERT INTO submissions(id,team_id,name,source,sha256,created_at,status,error,active,game_id,rules_version) VALUES(?,?,?,?,?,?,?,?,?,'hearts',1)",
+                  ('h-bot', team_id, 'Hearts bot', BLUFF_SOURCE, 'sha-h', now, 'accepted', None, 1))
+
+    class FakeHeartsBot:
+        def __init__(self, path, name, decision_ms, image=None, protocol=None):
+            self.name, self.path = name, path
+        def reset(self): pass
+        def act(self, observation):
+            if observation["turn"]["type"] == "play":
+                return {"type": "play", "card": observation["hand"][0]}
+            return {"type": "pass", "cards": observation["hand"][:3]}
+        def close(self): pass
+
+    def fake_match(bots, seed, config, capture=False):
+        # The seat shuffle moves the team's bot around; award by name instead.
+        # Seat 0 wins with the WORST penalty score: 26 points, everyone else 0.
+        winner = 0 if bots[0].name == "Solo" else 1 if bots[1].name == "Solo" else 2 if bots[2].name == "Solo" else 3
+        match_points = [1.0 if i == winner else 0.0 for i in range(4)]
+        return {"points": [26 if i == winner else 0 for i in range(4)], "match_points": match_points,
+                "winner_seats": [winner], "terminal_reason": "win",
+                "faults": [0] * 4, "errors": [None] * 4, "hands": 1, "matches": 1,
+                "decisions": 60, "names": [b.name for b in bots],
+                "log": [{"type": "end", "hands": [[], [], [], []]}],
+                "frames": [{"kind": "play", "seat": winner, "card": "2c", "counts": [12, 13, 13, 13]}]}
+
+    monkeypatch.setattr(worker, "ContainerBot", FakeHeartsBot)
+    monkeypatch.setattr(worker, "sandbox_status", lambda: {"available": True, "image": True, "error": None})
+    from arena.games import get_game
+    monkeypatch.setattr(get_game("hearts").adapter, "run_match", fake_match)
+    job_id = worker.enqueue_round('hearts-ev', manual=True)
+    with db.connect() as c:
+        job = dict(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+    result = worker.score_round(job)
+    with db.connect() as c:
+        row = c.execute("SELECT score FROM round_scores WHERE round_id=? AND team_id=?",
+                        (result["round_id"], team_id)).fetchone()
+    assert row["score"] == pytest.approx(1.0)  # match points, NOT the 26 penalty

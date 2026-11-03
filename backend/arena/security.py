@@ -5,7 +5,9 @@ import hmac
 import os
 import secrets
 import time
+
 from fastapi import HTTPException, Request
+
 from .db import connect
 
 COOKIE = "arena_session"

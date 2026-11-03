@@ -1,0 +1,12 @@
+# session ledger — one line per subagent lifecycle event (orchestrator writes)
+spawned deck TICKET-001
+done deck TICKET-001 (19/19 tests, gated)
+spawned uno TICKET-002
+spawned rummy TICKET-003
+spawned hearts TICKET-004
+spawned hexchange TICKET-005
+spawned frontend TICKET-006
+done hearts TICKET-004 (23/24 tests, gated)
+done uno TICKET-002 (28/28 tests, gated)
+done frontend TICKET-006 (lint+build green, gated)
+done rummy TICKET-003 (30/30 tests, gated)

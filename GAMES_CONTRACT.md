@@ -185,7 +185,100 @@ rows read as poker.
 - Event payloads gain `game`, `rules_version`; replay list/detail gain `game`.
 - Unknown/unsupported game on any endpoint → `422` with a clear detail.
 
-## 9. Invariants preserved
+## 9. UNO prototype (protocol `uno`, rules_version 1) — TICKET-002
+
+Familiar UNO as an exact, cited rules prototype — never labelled official; no
+proprietary art. The builder owns a full rules doc (Mattel rules citation +
+explicit deviation list) at `backend/arena/games/uno/RULES.md`, written before
+code.
+
+- **Deck (108):** per color r/y/g/b — one 0, two each 1–9, two each
+  skip/reverse/draw-two (25 × 4) + 4 wild + 4 wild draw-four. Card IDs: color
+  prefix + face (e.g. `r7`, `bskip`, `wwild4`) — exact scheme fixed in RULES.md.
+- **Seats:** 2–4; 7 cards each; start-card flip rules per RULES.md.
+- **Turn:** play a matching card, or draw (exact draw/play-through/pass rule
+  fixed in RULES.md and never silently changed).
+- **Action vocabulary (supervisor edges):** `{"type":"play","card":id}`,
+  `{"type":"draw"}`, `{"type":"pass"}`, `{"type":"uno"}` (declaration),
+  `{"type":"challenge"}` (wild-draw-four window only, exactly as RULES.md states).
+- **Visibility table (the freeze):**
+  - *public:* discard top, chosen color after a wild, all hand counts, turn
+    direction, active seat, pending draw penalty, deck-reshuffle events, uno
+    declarations, challenged-batch outcomes.
+  - *private(seat):* own hand.
+  - *hidden:* deck order, opponent hands.
+- **Termination:** first empty hand (single-match mode); cap 500 decisions →
+  fewest cards wins, ties share (platform convention).
+- **Fault fallback:** deterministic — draw one card (pass if deck exhausted).
+- **Scoring v1:** win 1 / loss 0 / ties share; standing = average match score.
+- **Reuses `games/common/deck.py`** (TICKET-001) for the shuffled draw stack;
+  color state is a public edge label, not hidden state.
+
+## 10. Rummy 13-card (protocol `rummy`, rules_version 1) — TICKET-003
+
+- **Deck (106):** two standard 52-card decks + 2 printed jokers (`XJ1`, `XJ2`);
+  one random wild rank drawn at start and **public** (all suits of that rank act
+  as jokers). Exact joker/wild semantics fixed in RULES.md (Mattel-style Indian
+  Rummy citation + deviation list).
+- **Seats:** 2–6; 13 cards each (deal from the shuffled 106 via
+  `games/common/deck.py`); stock + single public discard stack.
+- **Turn:** `{"type":"draw","from":"stock"|"discard"}` → optional
+  `{"type":"declare","hand":[14 ids]}` (valid groups only: ≥2 sequences, ≥1
+  pure, per RULES.md) → `{"type":"discard","card":id}`. Draw-then-declare
+  replaces the discard step exactly as RULES.md states.
+- **Visibility:** own hand private; stock order hidden; discard top public;
+  wild rank public; opponent hands hidden; declared hands fully public at
+  declaration.
+- **Termination:** first valid declaration wins (single match); cap 500
+  decisions → lowest deadwood points wins, ties share.
+- **Fault fallback:** draw from stock; discard lowest by contract sort key.
+- **Scoring v1:** win 1 / loss 0 / ties share; standing = average match score.
+
+## 11. Hearts (protocol `hearts`, rules_version 1) — TICKET-004
+
+- **Deck:** one standard 52, 4 seats, 13 each (`games/common/deck.py`).
+- **Phases:** pass 3 cards (rotation by hand number: left → right → across →
+  hold; single-match uses left) → 13 tricks. 2♣ leads first trick; follow suit
+  mandatory; hearts cannot lead until broken; Q♠ = 13 points, hearts 1 each;
+  shooting the moon = shooter 0, others +26 — exactly per RULES.md (Hoyle
+  citation + deviation list).
+- **Actions:** `{"type":"pass","cards":[3 ids]}` during the pass phase;
+  `{"type":"play","card":id}` during tricks.
+- **Visibility:** hands private; passed cards revealed to the receiver only;
+  current-trick plays public; completed tricks fully public.
+- **Termination:** 13 tricks = structurally bounded path (safety cap 500
+  anyway); winner = fewest points, ties share.
+- **Fault fallback:** pass the 3 lowest; play lowest legal card.
+
+## 12. Hexchange v1 (protocol `hexchange`, rules_version 1) — TICKET-005
+
+Social hex-island trading game **inspired by** the classic trading board game —
+never named "Catan" in the registry/UI; no proprietary art. RULES.md cites the
+inspiration and lists every deviation.
+
+- **Board (public):** 19 hexes (4 forest, 4 pasture, 4 wheat, 3 brick, 3 ore,
+  1 desert) in the classic island graph; seeded number tokens 2–12 (no 7);
+  54 roads / 20 settlements / 16 cities per supply. Resource tokens are opaque
+  per-seat strings (own engine module; does NOT use games/common/deck.py).
+- **Dev deck (hidden):** 14 knight, 5 VP, 2 monopoly, 2 road-building,
+  2 year-of-plenty (25 cards).
+- **Turn:** dice roll (chance, seeded; 7 = robber: move + steal 1 random card
+  from an adjacent seat holding >7 — steal target public, stolen card hidden)
+  → main phase actions → `{"type":"end_turn"}`.
+- **Action vocabulary:** `{"type":"build_road"|"build_settlement"|"build_city", ...}`,
+  `{"type":"buy_dev"}`, `{"type":"play_dev", ...}`,
+  **trade overlay:** `{"type":"offer","give":{...},"want":{...}}` → other seats
+  respond `accept` | `reject` | `counter{give,want}`; first accept executes;
+  max 3 offers per turn (finite negotiation edges); bank trades 4:1.
+- **Visibility:** board, all buildings, resource *counts*, all trade offers,
+  robber position public; resource card identities, dev deck, and dev cards
+  private/hidden.
+- **Termination:** first 10 VP (settlement 1, city 2, VP card 1); **deviations
+  declared in RULES.md: no longest-road/largest-army in v1**; cap 500 → most
+  VP wins, ties share.
+- **Fault fallback:** `end_turn`; trade responses fall back to `reject`.
+
+## 13. Invariants preserved
 
 Lease fencing, atomic round publication, `SandboxDown` = infrastructure
 failure, score-chain append-only auditing, hand-log persistence (per match

@@ -1,17 +1,17 @@
 """Docker-only submitted bot executor. No submitted Python executes on the host."""
 from __future__ import annotations
 
-import json
 import base64
+import json
 import math
 import os
-from pathlib import Path
 import re
 import selectors
 import shutil
 import subprocess
 import time
 import uuid
+from pathlib import Path
 
 IMAGE = "campus-arena-bot:local"
 MODEL_IMAGE = "campus-arena-model:local"
@@ -40,6 +40,53 @@ def reply_validator_for(protocol: str):
                 return (type(cards) is list and 1 <= len(cards) <= 4 and
                         all(type(card) is str and _BLUFF_CARD.fullmatch(card) for card in cards))
             return False
+        return validate
+    if protocol == "uno":
+        def validate(result):
+            if type(result) is not dict:
+                return False
+            kind = result.get("type")
+            if kind in ("draw", "pass", "uno", "challenge"):
+                return True
+            return kind == "play" and type(result.get("card")) is str and len(result["card"]) >= 3
+        return validate
+    if protocol == "hearts":
+        def validate(result):
+            if type(result) is not dict:
+                return False
+            kind = result.get("type")
+            if kind == "play":
+                return type(result.get("card")) is str and len(result["card"]) == 2
+            if kind == "pass":
+                cards = result.get("cards")
+                return (type(cards) is list and len(cards) == 3 and
+                        all(type(card) is str and len(card) == 2 for card in cards))
+            return False
+        return validate
+    if protocol == "rummy":
+        def validate(result):
+            if type(result) is not dict:
+                return False
+            kind = result.get("type")
+            if kind == "draw":
+                return result.get("from") in ("stock", "discard")
+            if kind == "discard":
+                return type(result.get("card")) is str and len(result["card"]) >= 2
+            if kind == "declare":
+                hand = result.get("hand")
+                return type(hand) is list and 1 <= len(hand) <= 32 and all(
+                    type(card) is str and len(card) >= 2 for card in hand)
+            return kind == "pass"
+        return validate
+    if protocol == "hexchange":
+        # Wide structured vocabulary; the engine deep-validates every action,
+        # so the transport enforces the type allow-list plus basic shapes.
+        kinds = ("build_road", "build_settlement", "build_city", "buy_dev",
+                 "play_dev", "bank_trade", "offer", "accept", "reject",
+                 "counter", "move_robber", "setup_settlement", "setup_road",
+                 "end_turn", "pass")
+        def validate(result):
+            return type(result) is dict and result.get("type") in kinds
         return validate
     raise ValueError(f"Unknown sandbox protocol '{protocol}'")
 

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { useData, post, type Data } from "./api";
+import { gameName } from "./games";
 import { A, fmtDay, Status } from "./ui";
 import { Replay } from "./Replay";
 import { EquityPanel } from "./EquityPanel";
@@ -37,7 +38,7 @@ function StatStrip() {
         </div>
         <div className="stat">
           <b>{hands.toLocaleString("en-US")}</b>
-          <span>Hands replayed</span>
+          <span>Hands &amp; matches replayed</span>
         </div>
         <div className="stat">
           <b>{top ? top.team_name : "—"}</b>
@@ -119,7 +120,7 @@ function HowItWorks({ starter }: { starter: Data | null }) {
                 <h3>Write your strategy</h3>
                 <p>
                   One Python class with an <strong>act(observation)</strong> method.
-                  Fold, check, call, or raise. Standard library only.
+                  Return one legal action per decision. Standard library only.
                 </p>
               </div>
             </li>
@@ -150,6 +151,59 @@ function HowItWorks({ starter }: { starter: Data | null }) {
             </div>
           </div>
         </div>
+      </div>
+    </section>
+  );
+}
+
+/** One honest line per game, shown in the home games panel. New games fall back to the generic line. */
+const GAME_LINES: Record<string, string> = {
+  poker: "No-limit Texas Hold'em: rising blinds, ICM-settled payouts, and every decision replayed.",
+  bluff: "Claim a rank, survive the challenges, run out of cards first.",
+  uno: "Match the top card and shed your cards first.",
+  hexchange: "Play matches, score victory points (VP).",
+};
+const GAME_LINE_FALLBACK = "New on the arena floor. The rules page has the full picture.";
+
+function GamesPanel() {
+  const { data, error } = useData("/games");
+  const games = data?.games ?? [];
+  return (
+    <section className="section" aria-labelledby="games-title">
+      <div className="wrap">
+        <div className="section-head">
+          <div>
+            <p className="label">The games</p>
+            <h2 id="games-title" className="display-1">
+              Choose your game
+            </h2>
+          </div>
+        </div>
+        {error && <div className="notice" role="alert">Failed to load games.</div>}
+        {!data && !error && <p role="status">Loading games…</p>}
+        {data && games.length === 0 && (
+          <div className="empty">No games are configured yet.</div>
+        )}
+        {games.length > 0 && (
+          <div className="grid-3">
+            {games.map((g: Data) => (
+              <div className="panel" key={g.id}>
+                <h3>{g.name || gameName(g.id)}</h3>
+                <p className="muted" style={{ marginTop: 8 }}>
+                  {GAME_LINES[g.id] ?? GAME_LINE_FALLBACK}
+                </p>
+                <p style={{ marginTop: 14, display: "flex", gap: 18, flexWrap: "wrap" }}>
+                  <A to={`/workshop?game=${g.id}`} className="text-button">
+                    Open the workshop →
+                  </A>
+                  <A to="/rules" className="text-button">
+                    Rules →
+                  </A>
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   );
@@ -189,6 +243,7 @@ function EventRows() {
                     <span className="arrow">↗</span>
                   </h3>
                 </span>
+                {e.variant && <span className="game-badge">{e.variant}</span>}
                 <Status text={e.status} done={["completed", "closed"].includes(e.status)} />
                 <span className="meta">
                   {fmtDay(e.build_starts_at)} · {e.entry_count} teams
@@ -288,6 +343,7 @@ export function ArenaHome() {
       </section>
       <Exhibit />
       <HowItWorks starter={starter.data} />
+      <GamesPanel />
       <EventRows />
       <StandingsPeek />
     </main>

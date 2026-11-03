@@ -12,3 +12,8 @@ frontend/tsconfig.tsbuildinfo
 .env.local
 .env.*.local
 *.log
+
+# build-machine artifacts
+dev/burn.log
+dev/.burn_baseline
+dev/.burn_tmp
