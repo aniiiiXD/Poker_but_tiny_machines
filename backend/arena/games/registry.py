@@ -327,7 +327,7 @@ class BluffAdapter:
 
 
 POKER = GameSpec(
-    game_id="poker", rules_version=1, display_name="No-limit Texas Hold'em",
+    game_id="poker", rules_version=1, display_name="Poker",
     variant_label="No-limit Texas Hold'em", seats=(2, 3, 4, 5, 6, 7, 8),
     tracks=("classic", "model"), protocol=1, adapter=PokerAdapter(),
 )
@@ -347,7 +347,7 @@ HEARTS = GameSpec(
     tracks=("classic", "model"), protocol=1, adapter=HeartsAdapter(),
 )
 RUMMY = GameSpec(
-    game_id="rummy", rules_version=1, display_name="Rummy 13-card",
+    game_id="rummy", rules_version=1, display_name="Rummy",
     variant_label="Indian Rummy v1 · two decks", seats=(2, 3, 4, 5, 6),
     tracks=("classic", "model"), protocol=1, adapter=RummyAdapter(),
 )
